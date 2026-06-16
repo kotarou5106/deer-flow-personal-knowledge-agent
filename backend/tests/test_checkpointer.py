@@ -194,6 +194,7 @@ class TestHarnessPackaging:
         assert optional_dependencies["postgres"] == [
             "asyncpg>=0.29",
             "langgraph-checkpoint-postgres>=3.0.5",
+            "pgvector>=0.3.6",
             "psycopg[binary]>=3.3.3",
             "psycopg-pool>=3.3.0",
         ]
