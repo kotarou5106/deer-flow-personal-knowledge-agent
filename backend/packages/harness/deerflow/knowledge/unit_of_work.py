@@ -15,8 +15,10 @@ from deerflow.knowledge.repositories import (
     ClaimRepository,
     CollectionRepository,
     ConflictGroupRepository,
+    EntityAliasRepository,
     EntityRepository,
     EvidenceSpanRepository,
+    ExtractionRunRepository,
     RelationRepository,
     RevisionRepository,
     SnapshotRepository,
@@ -42,9 +44,11 @@ class KnowledgeUnitOfWork:
         self.revisions = RevisionRepository(self.session)
         self.chunks = ChunkRepository(self.session)
         self.entities = EntityRepository(self.session)
+        self.entity_aliases = EntityAliasRepository(self.session)
         self.claims = ClaimRepository(self.session)
         self.evidence_spans = EvidenceSpanRepository(self.session)
         self.relations = RelationRepository(self.session)
+        self.extraction_runs = ExtractionRunRepository(self.session)
         self.collections = CollectionRepository(self.session)
         self.conflict_groups = ConflictGroupRepository(self.session)
         self.artifacts = ArtifactRepository(self.session)

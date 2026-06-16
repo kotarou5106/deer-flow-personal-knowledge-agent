@@ -4,8 +4,10 @@ from deerflow.knowledge.repositories.knowledge import (
     ClaimRepository,
     CollectionRepository,
     ConflictGroupRepository,
+    EntityAliasRepository,
     EntityRepository,
     EvidenceSpanRepository,
+    ExtractionRunRepository,
     RelationRepository,
 )
 from deerflow.knowledge.repositories.source import ChunkRepository, RevisionRepository, SnapshotRepository, SourceRepository
@@ -21,8 +23,10 @@ __all__ = [
     "ClaimRepository",
     "CollectionRepository",
     "ConflictGroupRepository",
+    "EntityAliasRepository",
     "EntityRepository",
     "EvidenceSpanRepository",
+    "ExtractionRunRepository",
     "RelationRepository",
     "RevisionRepository",
     "SnapshotRepository",

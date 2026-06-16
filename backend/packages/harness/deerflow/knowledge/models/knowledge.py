@@ -220,6 +220,7 @@ class ExtractionRun(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
     prompt_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus, native_enum=False, create_constraint=True), nullable=False, default=JobStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     __table_args__ = (

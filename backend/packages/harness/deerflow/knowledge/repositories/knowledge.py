@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from deerflow.knowledge.models import Claim, Collection, ConflictGroup, Entity, EvidenceSpan, Relation
+from deerflow.knowledge.models import Claim, Collection, ConflictGroup, Entity, EntityAlias, EvidenceSpan, ExtractionRun, Relation
 from deerflow.knowledge.repositories.base import WorkspaceRepository
 
 
@@ -11,6 +11,13 @@ class EntityRepository(WorkspaceRepository[Entity]):
 
     async def list_by_name(self, workspace_id: UUID, canonical_name: str) -> list[Entity]:
         return await self._all(self._workspace_stmt(workspace_id).where(Entity.canonical_name == canonical_name))
+
+
+class EntityAliasRepository(WorkspaceRepository[EntityAlias]):
+    model = EntityAlias
+
+    async def list_by_alias(self, workspace_id: UUID, alias: str) -> list[EntityAlias]:
+        return await self._all(self._workspace_stmt(workspace_id).where(EntityAlias.alias == alias))
 
 
 class ClaimRepository(WorkspaceRepository[Claim]):
@@ -41,3 +48,7 @@ class CollectionRepository(WorkspaceRepository[Collection]):
 
 class ConflictGroupRepository(WorkspaceRepository[ConflictGroup]):
     model = ConflictGroup
+
+
+class ExtractionRunRepository(WorkspaceRepository[ExtractionRun]):
+    model = ExtractionRun
