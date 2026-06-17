@@ -21,12 +21,17 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import FastAPI, HTTPException, Request
 from langgraph.types import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
+from deerflow.knowledge.jobs import KnowledgeJobService
+from deerflow.knowledge.runtime.context import TrustedKnowledgeContext
+from deerflow.knowledge.runtime.provider import KnowledgeServiceProvider
 from deerflow.persistence.feedback import FeedbackRepository
 from deerflow.runtime import RunContext, RunManager, StreamBridge
 from deerflow.runtime.events.store.base import RunEventStore
@@ -260,6 +265,17 @@ get_checkpointer: Callable[[Request], Checkpointer] = _require("checkpointer", "
 get_run_event_store: Callable[[Request], RunEventStore] = _require("run_event_store", "Run event store")
 get_feedback_repo: Callable[[Request], FeedbackRepository] = _require("feedback_repo", "Feedback")
 get_run_store: Callable[[Request], RunStore] = _require("run_store", "Run store")
+get_knowledge_provider: Callable[[Request], KnowledgeServiceProvider] = _require("knowledge_provider", "Knowledge service")
+
+
+def get_knowledge_job_service(request: Request) -> KnowledgeJobService:
+    val = getattr(request.app.state, "knowledge_job_service", None)
+    if val is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {"code": "service_not_configured", "message": "Knowledge job service is not configured"}},
+        )
+    return cast(KnowledgeJobService, val)
 
 
 def get_store(request: Request):
@@ -397,3 +413,31 @@ async def get_current_user(request: Request) -> str | None:
     """
     user = await get_optional_user_from_request(request)
     return str(user.id) if user else None
+
+
+def get_trusted_knowledge_context(request: Request) -> TrustedKnowledgeContext:
+    """Build Knowledge context only from authenticated Gateway state.
+
+    Gateway clients never supply user_id, actor_id, workspace_id, or storage
+    roots. Until DeerFlow has a first-class workspace membership model, the
+    API isolates Knowledge data in a deterministic per-user workspace.
+    """
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    user_id = str(user.id)
+    workspace_id = uuid5(NAMESPACE_URL, f"deerflow:knowledge-workspace:{user_id}")
+    thread_id = str(getattr(user, "id", user_id))
+    try:
+        from deerflow.config.paths import get_paths
+
+        storage_root = get_paths().sandbox_user_data_dir(thread_id, user_id=user_id)
+    except Exception:
+        storage_root = Path("/nonexistent")
+    return TrustedKnowledgeContext(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        thread_id=thread_id,
+        actor_id=user_id,
+        storage_root=storage_root,
+    )
