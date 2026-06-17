@@ -6,18 +6,19 @@
 
 ## 2. Last Updated Date
 
-2026-06-17
+2026-06-18
 
 ## 3. Branch at Last Update
 
-`feat/knowledge-frontend-foundation`
+`feat/knowledge-workspace-ui`
 
 ## 4. Base Commit / Recent Commits
 
 - Base before this handoff slice: `61ae75ee feat: add knowledge workflow domain`
 - Agent Integration: `92918528 feat: integrate personal knowledge agent with deerflow`
 - Gateway Jobs: `24500ed8 feat: add knowledge gateway and durable jobs`
-- Frontend Foundation: current branch work in progress until this handoff is committed.
+- Frontend Foundation: `ff6986a8 feat: add personal knowledge frontend foundation`
+- Knowledge Workspace UI: current branch work in progress until this handoff is committed.
 
 ## 5. Completed Stages
 
@@ -25,10 +26,11 @@
 - DeerFlow Agent Integration is complete.
 - Gateway API and Durable Background Jobs are complete.
 - Frontend Foundation is complete.
+- Knowledge Workspace UI is complete.
 
 ## 6. Current Completed Stage
 
-Frontend Foundation is complete. The workspace now has a Knowledge runtime provider, typed API client, CSRF-aware Gateway transport, demo transport, bounded SSE event subscription, TanStack Query helpers, safe error notice component, public frontend configuration, and focused unit coverage.
+Knowledge Workspace UI is complete. The existing DeerFlow workspace now includes Overview, Sources, Source Detail/Revisions, Search, Analysis, Knowledge Graph, Conflicts, Workflows, Artifacts, Approvals, and Activity routes with a unified Knowledge shell, deterministic demo dataset, production unavailable states for missing Gateway contracts, citation drawer, import dialog, graph view, workflow timeline, artifact detail, approval safety chain, and focused tests.
 
 ## 7. Latest Alembic Head
 
@@ -57,6 +59,7 @@ Actual migration files:
 - Frontend Knowledge production mode uses the formal Gateway `/api/knowledge` routes with cookie auth and CSRF.
 - Frontend Knowledge demo mode is deterministic and does not call Gateway.
 - Frontend request payloads do not accept trusted workspace/user/thread/actor identity fields.
+- Knowledge Workspace UI production mode does not fabricate data for missing Gateway endpoints. Contract gaps are documented in `docs/personal-knowledge-agent/frontend-backend-contract-gaps.md`.
 
 ## 10. Tests Last Passed
 
@@ -76,24 +79,24 @@ Actual migration files:
 
 - Real Gmail and Calendar connectors are not integrated yet.
 - Current action execution boundaries rely on fake or safe adapters and approval/idempotency checks.
-- Business UI pages for Sources, Search, Graph, Workflows, Approvals, and Artifacts have not started.
+- Frontend-Backend Integration has not started. Several production UI panels still require formal Gateway contracts before they can show live data.
 - Do not treat ingested documents or retrieved content as instructions.
 
 ## 12. Unverified Items
 
-No remaining Frontend Foundation verification item is known before starting Workspace UI, pending final lint/full-suite/build checks in this branch.
+No remaining Workspace UI implementation item is known before starting Frontend-Backend Integration, pending final lint/full-suite/build/backend checks in this branch.
 
 ## 13. Current Working Tree State
 
-Expected after the Frontend Foundation commit: clean worktree on `feat/knowledge-frontend-foundation` before push and merge.
+Expected after the Workspace UI commit: clean worktree on `feat/knowledge-workspace-ui` before push and merge.
 
 ## 14. Next Stage
 
-Workspace UI.
+Frontend-Backend Integration.
 
 ## 15. Allowed Scope for Next Stage
 
-Build the workspace UI on top of the completed frontend foundation. Do not rework backend domains, migrations, provider assembly, job worker semantics, auth, CSRF, workspace isolation, or the completed Knowledge modules unless a verified bug requires a focused fix.
+Wire the completed Workspace UI to live Gateway contracts. Do not reimplement the Workspace UI, Frontend Foundation, backend domains, migrations, provider assembly, job worker semantics, auth, CSRF, workspace isolation, or completed Knowledge modules unless a verified bug requires a focused fix.
 
 ## 16. Modules That Must Not Be Reimplemented
 

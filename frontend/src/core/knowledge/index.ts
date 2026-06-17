@@ -8,3 +8,6 @@ export * from "./hooks";
 export * from "./sse";
 export * from "./transport";
 export * from "./types";
+export * from "./workspace-fixtures";
+export * from "./workspace-model";
+export * from "./workspace-types";

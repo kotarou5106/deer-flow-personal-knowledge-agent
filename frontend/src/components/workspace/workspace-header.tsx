@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageSquarePlus } from "lucide-react";
+import { BookOpenIcon, MessageSquarePlus } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -50,6 +50,17 @@ export function WorkspaceHeader({ className }: { className?: string }) {
         )}
       </div>
       <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            isActive={pathname?.startsWith("/workspace/knowledge")}
+            asChild
+          >
+            <Link className="text-muted-foreground" href="/workspace/knowledge">
+              <BookOpenIcon size={16} />
+              <span>Knowledge</span>
+            </Link>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton
             isActive={pathname === "/workspace/chats/new"}
