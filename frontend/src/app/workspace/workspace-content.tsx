@@ -6,6 +6,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { CommandPalette } from "@/components/workspace/command-palette";
 import { GatewayOfflineBanner } from "@/components/workspace/gateway-offline-banner";
 import { WorkspaceSidebar } from "@/components/workspace/workspace-sidebar";
+import { KnowledgeProvider } from "@/core/knowledge";
 
 function parseSidebarOpenCookie(
   value: string | undefined,
@@ -29,13 +30,15 @@ export async function WorkspaceContent({
 
   return (
     <QueryClientProvider>
-      <SidebarProvider className="h-screen" defaultOpen={initialSidebarOpen}>
-        <WorkspaceSidebar />
-        <SidebarInset className="min-w-0">
-          <GatewayOfflineBanner gatewayUnavailable={gatewayUnavailable} />
-          {children}
-        </SidebarInset>
-      </SidebarProvider>
+      <KnowledgeProvider>
+        <SidebarProvider className="h-screen" defaultOpen={initialSidebarOpen}>
+          <WorkspaceSidebar />
+          <SidebarInset className="min-w-0">
+            <GatewayOfflineBanner gatewayUnavailable={gatewayUnavailable} />
+            {children}
+          </SidebarInset>
+        </SidebarProvider>
+      </KnowledgeProvider>
       <CommandPalette />
       <Toaster position="top-center" />
     </QueryClientProvider>
