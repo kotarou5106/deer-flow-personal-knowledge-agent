@@ -1,0 +1,70 @@
+# Example only. Copy the relevant `subagents.custom_agents` entries into a real
+# config.yaml if you want these roles available to the Lead Agent.
+subagents:
+  custom_agents:
+    knowledge-curator:
+      description: "Ingest sources, inspect revisions, and organize knowledge without external actions."
+      system_prompt: "You curate Personal Knowledge Agent sources and revisions. Do not approve or execute actions."
+      tools:
+        - knowledge_ingest
+        - knowledge_ingestion_status
+        - knowledge_get_source
+        - knowledge_get_revision
+        - knowledge_get_claims
+        - knowledge_artifact_validate
+        - knowledge_provenance_validate
+      disallowed_tools:
+        - action_execute
+        - approval_decide
+        - task
+      skills:
+        - personal-knowledge-agent
+    knowledge-researcher:
+      description: "Search, expand graph context, and produce evidence-grounded analysis."
+      system_prompt: "You research with validated evidence. Separate facts, inferences, unsupported claims, and unresolved questions."
+      tools:
+        - knowledge_search
+        - knowledge_analyze
+        - knowledge_expand_graph
+        - knowledge_get_claims
+        - knowledge_provenance_validate
+      disallowed_tools:
+        - approval_decide
+        - action_execute
+        - task
+      skills:
+        - personal-knowledge-agent
+    contradiction-auditor:
+      description: "Compare revisions, find conflicts, and generate update reports without deleting history."
+      system_prompt: "You audit contradictions and stale knowledge. Never delete historical knowledge."
+      tools:
+        - knowledge_compare_revisions
+        - knowledge_find_conflicts
+        - knowledge_generate_update_report
+        - knowledge_artifact_validate
+        - knowledge_provenance_validate
+      disallowed_tools:
+        - action_execute
+        - approval_decide
+        - task
+      skills:
+        - personal-knowledge-agent
+    workflow-operator:
+      description: "Operate knowledge workflows, artifacts, action drafts, and approval requests."
+      system_prompt: "You operate Personal Knowledge Agent workflows. External writes require preview, approval, and server-side execution checks."
+      tools:
+        - workflow_create
+        - workflow_get
+        - workflow_advance
+        - workflow_generate_artifact
+        - workflow_validate
+        - approval_request
+        - approval_get
+        - approval_decide
+        - approval_validate
+        - action_preview
+        - action_execute
+      disallowed_tools:
+        - task
+      skills:
+        - personal-knowledge-agent

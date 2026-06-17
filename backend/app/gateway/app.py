@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -19,6 +20,7 @@ from app.gateway.routers import (
     channel_connections,
     channels,
     feedback,
+    knowledge,
     mcp,
     memory,
     models,
@@ -211,6 +213,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with langgraph_runtime(app, startup_config):
         logger.info("LangGraph runtime initialised")
 
+        knowledge_provider = None
+        knowledge_worker = None
+        knowledge_database_url = os.environ.get("KNOWLEDGE_DATABASE_URL")
+        if knowledge_database_url:
+            try:
+                from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker
+                from deerflow.knowledge.jobs.handlers import provider_handlers
+                from deerflow.knowledge.runtime.provider import build_database_knowledge_service_provider, set_knowledge_service_provider
+
+                knowledge_provider = build_database_knowledge_service_provider(knowledge_database_url)
+                await knowledge_provider.initialize()
+                set_knowledge_service_provider(knowledge_provider)
+                app.state.knowledge_provider = knowledge_provider
+                session_factory = knowledge_provider.database.session_factory
+                if session_factory is not None:
+                    app.state.knowledge_job_service = KnowledgeJobService(session_factory)
+                    if os.environ.get("KNOWLEDGE_WORKER_ENABLED", "").lower() in {"1", "true", "yes"}:
+                        knowledge_worker = KnowledgeJobWorker(
+                            session_factory=session_factory,
+                            handlers=provider_handlers(knowledge_provider),
+                            shutdown_timeout_seconds=_SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+                        )
+                        await knowledge_worker.start()
+                        app.state.knowledge_worker = knowledge_worker
+                logger.info("Knowledge provider initialised")
+            except Exception:
+                logger.exception("Knowledge provider failed to initialize; Gateway will continue without Knowledge API")
+        else:
+            from deerflow.knowledge.runtime.provider import UnconfiguredKnowledgeServiceProvider
+
+            app.state.knowledge_provider = UnconfiguredKnowledgeServiceProvider()
+
         # Check admin bootstrap state and migrate orphan threads after admin exists.
         # Must run AFTER langgraph_runtime so app.state.store is available for thread migration
         await _ensure_admin_user(app)
@@ -225,6 +259,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.exception("No IM channels configured or channel service failed to start")
 
         yield
+
+        if knowledge_worker is not None:
+            try:
+                await asyncio.wait_for(knowledge_worker.shutdown(), timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning("Knowledge worker shutdown exceeded %.1fs", _SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except Exception:
+                logger.exception("Failed to stop Knowledge worker")
+        if knowledge_provider is not None:
+            try:
+                from deerflow.knowledge.runtime.provider import reset_knowledge_service_provider
+
+                await asyncio.wait_for(knowledge_provider.dispose(), timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+                reset_knowledge_service_provider()
+            except TimeoutError:
+                logger.warning("Knowledge provider dispose exceeded %.1fs", _SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except Exception:
+                logger.exception("Failed to dispose Knowledge provider")
 
         # Stop channel service on shutdown (bounded to prevent worker hang)
         try:
@@ -405,6 +457,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Stateless Runs API (stream/wait without a pre-existing thread)
     app.include_router(runs.router)
+
+    # Knowledge API is mounted at /api/knowledge
+    app.include_router(knowledge.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:
