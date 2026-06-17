@@ -245,11 +245,39 @@ class IndexingRun(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
     )
 
 
+class KnowledgeUpdateRun(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
+    __tablename__ = "knowledge_update_runs"
+    old_revision_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False)
+    new_revision_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False)
+    updater_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    updater_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(Enum(JobStatus, native_enum=False, create_constraint=True), nullable=False, default=JobStatus.PENDING)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_knowledge_update_runs_id_workspace"),
+        UniqueConstraint(
+            "workspace_id",
+            "old_revision_id",
+            "new_revision_id",
+            "updater_name",
+            "updater_version",
+            name="uq_knowledge_update_runs_revision_pair",
+        ),
+        ForeignKeyConstraint(["old_revision_id", "workspace_id"], ["knowledge_document_revisions.id", "knowledge_document_revisions.workspace_id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["new_revision_id", "workspace_id"], ["knowledge_document_revisions.id", "knowledge_document_revisions.workspace_id"], ondelete="RESTRICT"),
+        Index("ix_knowledge_update_runs_workspace_status", "workspace_id", "status", "created_at"),
+    )
+
+
 class ConflictGroup(UUIDPrimaryKeyMixin, WorkspaceMixin, TimestampMixin, KnowledgeBase):
     __tablename__ = "knowledge_conflict_groups"
     topic: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[ConflictStatus] = mapped_column(Enum(ConflictStatus, native_enum=False, create_constraint=True), nullable=False, default=ConflictStatus.OPEN)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     __table_args__ = (
         UniqueConstraint("id", "workspace_id", name="uq_knowledge_conflict_groups_id_workspace"),
         Index("ix_knowledge_conflict_groups_workspace_status", "workspace_id", "status"),

@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from deerflow.knowledge.enums import ClaimStatus
 from deerflow.knowledge.models import Chunk, Claim, DocumentRevision, Entity, Source
 from deerflow.knowledge.retrieval.indexing import EmbeddingModel
 from deerflow.knowledge.retrieval.schemas import CandidateType, Provenance, QuerySpec, RetrievalCandidate, RetrievalChannel
@@ -121,6 +122,7 @@ class VectorRetriever:
             await session.execute(
                 select(Claim).where(
                     Claim.workspace_id == workspace_id,
+                    Claim.status == ClaimStatus.ACTIVE,
                     Claim.embedding.is_not(None),
                     Claim.embedding_model == self._embedding_model.model_identity,
                     Claim.embedding_dimension == self._embedding_model.dimension,

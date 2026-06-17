@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from deerflow.knowledge.enums import ClaimStatus
 from deerflow.knowledge.models import Chunk, Claim, ClaimEvidenceLink, DocumentRevision, Entity, EntityAlias, EvidenceSpan, Relation, Source
 from deerflow.knowledge.retrieval.schemas import CandidateType, Provenance, QuerySpec, RetrievalCandidate, RetrievalChannel
 
@@ -70,7 +71,7 @@ class GraphRetriever:
                         (Chunk.revision_id == DocumentRevision.id) & (Chunk.workspace_id == DocumentRevision.workspace_id),
                     )
                     .join(Source, (DocumentRevision.source_id == Source.id) & (DocumentRevision.workspace_id == Source.workspace_id))
-                    .where(Claim.workspace_id == workspace_id),
+                    .where(Claim.workspace_id == workspace_id, Claim.status == ClaimStatus.ACTIVE),
                     query_spec,
                 )
                 claims = await session.execute(claim_stmt)

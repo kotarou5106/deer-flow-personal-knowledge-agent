@@ -16,6 +16,7 @@ from deerflow.knowledge.models.knowledge import (
     EvidenceSpan,
     ExtractionRun,
     IndexingRun,
+    KnowledgeUpdateRun,
     Relation,
     Topic,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "IndexingRun",
     "IngestionJob",
     "KnowledgeBase",
+    "KnowledgeUpdateRun",
     "Relation",
     "Source",
     "SourceSnapshot",
