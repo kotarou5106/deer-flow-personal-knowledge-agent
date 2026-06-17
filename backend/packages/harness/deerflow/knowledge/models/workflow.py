@@ -100,18 +100,26 @@ class ApprovalRequest(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
     __tablename__ = "knowledge_approval_requests"
 
     workflow_run_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False)
+    source_step_run_id: Mapped[UUID | None] = mapped_column(postgresql.UUID(as_uuid=True), nullable=True)
     action_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    target: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    action_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    action_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     action_preview: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     risk_level: Mapped[RiskLevel] = mapped_column(Enum(RiskLevel, native_enum=False, create_constraint=True), nullable=False, default=RiskLevel.LOW)
     status: Mapped[ApprovalStatus] = mapped_column(Enum(ApprovalStatus, native_enum=False, create_constraint=True), nullable=False, default=ApprovalStatus.DRAFT)
+    requested_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("id", "workspace_id", name="uq_knowledge_approval_requests_id_workspace"),
         ForeignKeyConstraint(["workflow_run_id", "workspace_id"], ["knowledge_workflow_runs.id", "knowledge_workflow_runs.workspace_id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["source_step_run_id", "workspace_id"], ["knowledge_workflow_step_runs.id", "knowledge_workflow_step_runs.workspace_id"], ondelete="RESTRICT"),
         Index("ix_knowledge_approval_requests_workspace_status", "workspace_id", "status", "requested_at"),
+        Index("ix_knowledge_approval_requests_workspace_hash", "workspace_id", "action_payload_hash"),
     )
 
 
@@ -119,16 +127,23 @@ class ActionExecution(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
     __tablename__ = "knowledge_action_executions"
 
     approval_request_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     connector_type: Mapped[str] = mapped_column(String(128), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    action_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     request_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     result_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[ActionExecutionStatus] = mapped_column(Enum(ActionExecutionStatus, native_enum=False, create_constraint=True), nullable=False, default=ActionExecutionStatus.PENDING)
+    external_reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requires_reconciliation: Mapped[bool] = mapped_column(nullable=False, default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     __table_args__ = (
         UniqueConstraint("id", "workspace_id", name="uq_knowledge_action_executions_id_workspace"),
+        UniqueConstraint("approval_request_id", name="uq_knowledge_action_executions_approval"),
         UniqueConstraint("workspace_id", "connector_type", "idempotency_key", name="uq_knowledge_action_executions_idempotency"),
         ForeignKeyConstraint(["approval_request_id", "workspace_id"], ["knowledge_approval_requests.id", "knowledge_approval_requests.workspace_id"], ondelete="RESTRICT"),
         Index("ix_knowledge_action_executions_workspace_status", "workspace_id", "status", "created_at"),

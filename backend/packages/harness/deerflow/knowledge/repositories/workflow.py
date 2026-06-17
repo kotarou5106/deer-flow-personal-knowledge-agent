@@ -34,10 +34,18 @@ class ApprovalRequestRepository(WorkspaceRepository[ApprovalRequest]):
     async def list_for_workflow(self, workspace_id: UUID, workflow_run_id: UUID) -> list[ApprovalRequest]:
         return await self._all(self._workspace_stmt(workspace_id).where(ApprovalRequest.workflow_run_id == workflow_run_id))
 
+    async def get_for_workflow(self, workspace_id: UUID, workflow_run_id: UUID, approval_request_id: UUID) -> ApprovalRequest | None:
+        stmt = self._workspace_stmt(workspace_id).where(ApprovalRequest.workflow_run_id == workflow_run_id, ApprovalRequest.id == approval_request_id)
+        return await self._first(stmt)
+
 
 class ActionExecutionRepository(WorkspaceRepository[ActionExecution]):
     model = ActionExecution
 
     async def get_by_idempotency_key(self, workspace_id: UUID, connector_type: str, idempotency_key: str) -> ActionExecution | None:
         stmt = self._workspace_stmt(workspace_id).where(ActionExecution.connector_type == connector_type, ActionExecution.idempotency_key == idempotency_key)
+        return await self._first(stmt)
+
+    async def get_for_approval(self, workspace_id: UUID, approval_request_id: UUID) -> ActionExecution | None:
+        stmt = self._workspace_stmt(workspace_id).where(ActionExecution.approval_request_id == approval_request_id)
         return await self._first(stmt)
