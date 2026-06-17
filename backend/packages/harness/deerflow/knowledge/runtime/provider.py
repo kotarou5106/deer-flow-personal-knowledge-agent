@@ -254,6 +254,8 @@ class DatabaseKnowledgeServiceProvider:
         media_type = payload.get("media_type")
         metadata = payload.get("metadata") or {}
         display_name = None
+        if source_type == "file":
+            source_type = "upload_file"
         if source_type == "text":
             text_bytes = source_uri.encode("utf-8")
             digest = hashlib.sha256(text_bytes).hexdigest()

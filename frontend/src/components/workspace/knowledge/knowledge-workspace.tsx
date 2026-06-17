@@ -300,52 +300,69 @@ function ProductionGatewayView({
   onOpenCitation: (citation: KnowledgeCitation) => void;
 }) {
   const client = useKnowledgeClient();
-  const overviewQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "overview"],
-    queryFn: ({ signal }) => client.getOverview({ signal }),
-    retry: false,
-  });
-  const sourcesQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "sources"],
-    queryFn: ({ signal }) => client.listSources({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
-  const sourceDetailQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "source-detail", sourceId],
-    queryFn: ({ signal }) => client.getSourceDetail(sourceId ?? "", { signal }),
-    enabled: view === "source-detail" && Boolean(sourceId),
-    retry: false,
-  });
-  const activityQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "activity"],
-    queryFn: ({ signal }) => client.listActivity({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
-  const claimsQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "claims"],
-    queryFn: ({ signal }) => client.listClaims({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
-  const conflictsQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "conflicts"],
-    queryFn: ({ signal }) => client.listConflicts({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
-  const workflowsQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "workflows"],
-    queryFn: ({ signal }) => client.listWorkflows({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
-  const artifactsQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "artifacts"],
-    queryFn: ({ signal }) => client.listArtifacts({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
-  const approvalsQuery = useQuery({
-    queryKey: ["knowledge", "workspace", "approvals"],
-    queryFn: ({ signal }) => client.listApprovals({ limit: 100, offset: 0 }, { signal }),
-    retry: false,
-  });
+  const [datasetState, setDatasetState] = useState<{
+    loading: boolean;
+    error: Error | null;
+    dataset: KnowledgeWorkspaceDataset;
+  }>(() => ({ loading: true, error: null, dataset: emptyProductionDataset() }));
+
+  useEffect(() => {
+    if (view === "search" || view === "analysis" || view === "graph") return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setDatasetState((current) => ({ ...current, loading: true, error: null }));
+
+    async function loadDataset() {
+      try {
+        const [overview, sourcesEnvelope, activityEnvelope] = await Promise.all([
+          client.getOverview({ signal: controller.signal }),
+          client.listSources({ limit: 100, offset: 0 }, { signal: controller.signal }),
+          client.listActivity({ limit: 100, offset: 0 }, { signal: controller.signal }),
+        ]);
+        const [claims, conflicts, workflowsEnvelope, artifactsEnvelope, approvalsEnvelope, sourceDetail] = await Promise.all([
+          client.listClaims({ limit: 100, offset: 0 }, { signal: controller.signal }).catch(() => undefined),
+          client.listConflicts({ limit: 100, offset: 0 }, { signal: controller.signal }).catch(() => undefined),
+          client.listWorkflows({ limit: 100, offset: 0 }, { signal: controller.signal }).catch(() => undefined),
+          client.listArtifacts({ limit: 100, offset: 0 }, { signal: controller.signal }).catch(() => undefined),
+          client.listApprovals({ limit: 100, offset: 0 }, { signal: controller.signal }).catch(() => undefined),
+          view === "source-detail" && sourceId
+            ? client.getSourceDetail(sourceId, { signal: controller.signal }).catch(() => undefined)
+            : Promise.resolve(undefined),
+        ]);
+        if (!cancelled) {
+          setDatasetState({
+            loading: false,
+            error: null,
+            dataset: buildProductionDataset({
+              overview,
+              sourcesEnvelope,
+              sourceDetail,
+              activityEnvelope,
+              claims,
+              conflicts,
+              workflowsEnvelope,
+              artifactsEnvelope,
+              approvalsEnvelope,
+            }),
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setDatasetState({
+            loading: false,
+            error: error instanceof Error ? error : new Error("Production Knowledge data could not be loaded."),
+            dataset: emptyProductionDataset(),
+          });
+        }
+      }
+    }
+
+    void loadDataset();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [client, sourceId, view]);
 
   if (view === "search") {
     return <ProductionSearchView onOpenCitation={onOpenCitation} />;
@@ -354,50 +371,19 @@ function ProductionGatewayView({
     return <ProductionUnavailable view={view} />;
   }
 
-  const loading =
-    overviewQuery.isLoading ||
-    sourcesQuery.isLoading ||
-    activityQuery.isLoading ||
-    claimsQuery.isLoading ||
-    conflictsQuery.isLoading ||
-    workflowsQuery.isLoading ||
-    artifactsQuery.isLoading ||
-    approvalsQuery.isLoading ||
-    sourceDetailQuery.isLoading;
-  if (loading) return <Skeleton className="h-72" />;
+  if (datasetState.loading) return <Skeleton className="h-72" />;
 
-  const error = [
-    overviewQuery.error,
-    sourcesQuery.error,
-    activityQuery.error,
-    claimsQuery.error,
-    conflictsQuery.error,
-    workflowsQuery.error,
-    artifactsQuery.error,
-    approvalsQuery.error,
-    sourceDetailQuery.error,
-  ].find(Boolean);
-  if (error) {
+  if (datasetState.error) {
     return (
       <Alert variant="destructive">
         <AlertTriangleIcon className="size-4" />
         <AlertTitle>Knowledge Gateway unavailable</AlertTitle>
-        <AlertDescription>{error instanceof Error ? error.message : "Production Knowledge data could not be loaded."}</AlertDescription>
+        <AlertDescription>{datasetState.error.message}</AlertDescription>
       </Alert>
     );
   }
 
-  const dataset = buildProductionDataset({
-    overview: overviewQuery.data,
-    sourcesEnvelope: sourcesQuery.data,
-    sourceDetail: sourceDetailQuery.data,
-    activityEnvelope: activityQuery.data,
-    claims: claimsQuery.data,
-    conflicts: conflictsQuery.data,
-    workflowsEnvelope: workflowsQuery.data,
-    artifactsEnvelope: artifactsQuery.data,
-    approvalsEnvelope: approvalsQuery.data,
-  });
+  const dataset = datasetState.dataset;
 
   if (view === "overview") return <OverviewView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "sources") return <SourcesView dataset={dataset} onOpenCitation={onOpenCitation} />;
@@ -413,14 +399,16 @@ function ProductionSearchView({ onOpenCitation }: { onOpenCitation: (citation: K
   const client = useKnowledgeClient();
   const [query, setQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState<string | null>(null);
+  const canFetchKnowledge = typeof window !== "undefined";
   const searchQuery = useQuery({
     queryKey: ["knowledge", "workspace", "search", submittedQuery],
     queryFn: ({ signal }) => client.search({ query: submittedQuery ?? "", context_budget: 4000 }, { signal }),
-    enabled: Boolean(submittedQuery),
+    enabled: canFetchKnowledge && Boolean(submittedQuery),
     retry: false,
   });
   const dataset = emptyProductionDataset();
-  const results = mapSearchResults(searchQuery.data);
+  const { results, citations } = mapSearchPayload(searchQuery.data);
+  dataset.citations = citations;
   dataset.searchResults = results;
 
   return (
@@ -775,26 +763,55 @@ function mapOverviewActivity(overview?: Record<string, unknown>): KnowledgeActiv
   }));
 }
 
-function mapSearchResults(raw: unknown): SearchResult[] {
+function mapSearchPayload(raw: unknown): { results: SearchResult[]; citations: KnowledgeCitation[] } {
   const record = asRecord(raw);
   const rows = readArray(record, "results").length > 0
     ? readArray(record, "results")
     : [...readArray(record, "retrieved_chunks"), ...readArray(record, "evidence_spans"), ...readArray(record, "claims")];
-  return rows.map((row, index) => {
+  const citations: KnowledgeCitation[] = [];
+  const results = rows.map((row, index) => {
     const provenance = asRecord(row.provenance);
     const channel = readString(row, "retrieval_channel");
+    const citationId = readString(provenance, "evidence_span_id") || readString(provenance, "chunk_id") || `search-citation-${index}`;
+    const sourceId = readString(row, "source_id") || readString(provenance, "source_id");
+    const revisionId = readString(row, "revision_id") || readString(provenance, "revision_id");
+    const chunkId = readString(row, "chunk_id") || readString(provenance, "chunk_id");
+    const content = readString(row, "content", "snippet");
+    citations.push({
+      citationId,
+      sourceId,
+      revisionId,
+      chunkId,
+      evidenceSpanId: readString(provenance, "evidence_span_id") || citationId,
+      sourceTitle: readString(asRecord(row.metadata), "source_title") || sourceId || "Knowledge source",
+      sourceUri: sourceId,
+      quotedText: content,
+      pageNumber: readNumber(provenance, "page_number") || undefined,
+      sectionPath: Array.isArray(provenance.section_path) ? provenance.section_path.filter((item): item is string => typeof item === "string") : [],
+      startOffset: readNumber(provenance, "start_offset"),
+      endOffset: readNumber(provenance, "end_offset", content.length),
+      role: row.is_context_expansion === true || row.direct_evidence === false ? "parent_context" : "direct",
+    });
     return {
       id: readString(row, "candidate_id", "id") || `result-${index}`,
       title: readString(asRecord(row.metadata), "title") || readString(row, "candidate_type") || "Evidence result",
-      snippet: readString(row, "content", "snippet"),
-      sourceId: readString(row, "source_id") || readString(provenance, "source_id"),
-      revisionId: readString(row, "revision_id") || readString(provenance, "revision_id"),
-      citationIds: [],
-      retrievalChannels: channel.includes("graph") ? ["Graph"] : channel.includes("vector") ? ["Vector"] : channel.includes("lexical") ? ["Lexical"] : ["Fused Result"],
+      snippet: content,
+      sourceId,
+      revisionId,
+      citationIds: [citationId],
+      retrievalChannels: mapRetrievalChannels(channel),
       relatedClaimIds: [],
       relatedEntityIds: [],
     };
   });
+  return { results, citations };
+}
+
+function mapRetrievalChannels(channel: string): SearchResult["retrievalChannels"] {
+  if (channel.includes("graph")) return ["Graph"];
+  if (channel.includes("vector")) return ["Vector"];
+  if (channel.includes("lexical")) return ["Lexical"];
+  return ["Fused Result"];
 }
 
 function OverviewView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
@@ -944,7 +961,7 @@ function ImportDialog() {
     const draft: KnowledgeImportDraft = {
       mode,
       sourceUri,
-      mediaType: mode === "file" ? "application/pdf" : null,
+      mediaType: mode === "file" ? mediaTypeForFileUri(sourceUri) : null,
       title: sourceUri.split("/").pop(),
     };
     const payload = buildDemoImportPayload(draft);
@@ -998,6 +1015,18 @@ function ImportDialog() {
       </DialogContent>
     </Dialog>
   );
+}
+
+function mediaTypeForFileUri(sourceUri: string): string | null {
+  const normalized = sourceUri.split("?")[0]?.toLowerCase() ?? "";
+  if (normalized.endsWith(".txt")) return "text/plain";
+  if (normalized.endsWith(".md") || normalized.endsWith(".markdown")) return "text/markdown";
+  if (normalized.endsWith(".html") || normalized.endsWith(".htm")) return "text/html";
+  if (normalized.endsWith(".pdf")) return "application/pdf";
+  if (normalized.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (normalized.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  if (normalized.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  return null;
 }
 
 function JobAcceptedNotice({ jobId }: { jobId: string }) {

@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import asyncio
+import os
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import httpx
+import pytest
+import pytest_asyncio
+import yaml
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import select, text
+
+from deerflow.knowledge.models import Chunk, DocumentRevision, Source, SourceSnapshot
+
+pytestmark = pytest.mark.skipif(
+    not os.getenv("KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL"),
+    reason="KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL is not set",
+)
+
+
+@pytest.fixture()
+def fullstack_gateway_config(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    home_path = tmp_path / "home"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_version": 13,
+                "log_level": "warning",
+                "models": [],
+                "sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider", "allow_host_bash": False},
+                "memory": {"token_counting": "char"},
+                "database": {"backend": "memory"},
+                "run_events": {"backend": "memory"},
+                "skills": {"enabled": False},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("DEER_FLOW_HOME", str(home_path))
+    monkeypatch.setenv("KNOWLEDGE_DATABASE_URL", os.environ["KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL"])
+    monkeypatch.setenv("KNOWLEDGE_WORKER_ENABLED", "true")
+    monkeypatch.delenv("DEER_FLOW_AUTH_DISABLED", raising=False)
+
+    from deerflow.config import paths as paths_module
+    from deerflow.config.app_config import reset_app_config
+
+    reset_app_config()
+    monkeypatch.setattr(paths_module, "_paths", None)
+    try:
+        yield config_path
+    finally:
+        reset_app_config()
+        monkeypatch.setattr(paths_module, "_paths", None)
+
+
+@pytest_asyncio.fixture()
+async def migrated_knowledge_db():
+    database_url = os.environ["KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL"]
+    script = Path.cwd() / "packages/harness/deerflow/persistence/migrations"
+    cfg = Config(str(script / "alembic.ini"))
+    cfg.set_main_option("script_location", str(script))
+    cfg.set_main_option("sqlalchemy.url", database_url)
+    await asyncio.to_thread(command.downgrade, cfg, "base")
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    yield
+    await asyncio.to_thread(command.downgrade, cfg, "base")
+
+
+def _headers(user_id: str = "owner-a") -> dict[str, str]:
+    from app.gateway.internal_auth import create_internal_auth_headers
+
+    return {**create_internal_auth_headers(owner_user_id=user_id), "X-CSRF-Token": "csrf-token"}
+
+
+def _client(app) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+    client.cookies.set("csrf_token", "csrf-token")
+    return client
+
+
+async def _wait_for_status(client: httpx.AsyncClient, job_id: str, expected: set[str], *, user_id: str = "owner-a") -> dict:
+    deadline = asyncio.get_running_loop().time() + 10
+    last = None
+    while asyncio.get_running_loop().time() < deadline:
+        response = await client.get(f"/api/knowledge/jobs/{job_id}", headers=_headers(user_id))
+        assert response.status_code == 200
+        last = response.json()
+        if last["status"] in expected:
+            return last
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"job did not reach {sorted(expected)}; last={last}")
+
+
+async def _read_sse_until_terminal(client: httpx.AsyncClient, job_id: str, *, user_id: str = "owner-a") -> list[tuple[int, str]]:
+    events: list[tuple[int, str]] = []
+    async with client.stream("GET", f"/api/knowledge/jobs/{job_id}/events", headers=_headers(user_id), timeout=10) as response:
+        assert response.status_code == 200
+        current_id: int | None = None
+        current_event: str | None = None
+        async for line in response.aiter_lines():
+            if line.startswith("id: "):
+                current_id = int(line.removeprefix("id: "))
+            elif line.startswith("event: "):
+                current_event = line.removeprefix("event: ")
+            elif line == "" and current_id is not None and current_event is not None:
+                events.append((current_id, current_event))
+                if current_event in {"job_succeeded", "job_failed", "job_cancelled"}:
+                    break
+                current_id = None
+                current_event = None
+    return events
+
+
+async def _local_http_server(body: bytes, media_type: str = "text/html") -> AsyncIterator[str]:
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.read(4096)
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            + f"Content-Type: {media_type}\r\n".encode()
+            + f"Content-Length: {len(body)}\r\n".encode()
+            + b"Connection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/fixture.html"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_file_ingestion_sse_source_detail_search_and_workspace_isolation(fullstack_gateway_config, migrated_knowledge_db) -> None:
+    from app.gateway.app import create_app
+    from deerflow.config.paths import get_paths
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        owner_id = "owner-a"
+        thread_id = owner_id
+        paths = get_paths()
+        paths.ensure_thread_dirs(thread_id, user_id=owner_id)
+        upload_dir = paths.sandbox_uploads_dir(thread_id, user_id=owner_id)
+        txt_path = upload_dir / "knowledge-live.txt"
+        md_path = upload_dir / "knowledge-live.md"
+        txt_path.write_text("Alpha knowledge launch budget includes deterministic retrieval evidence.", encoding="utf-8")
+        md_path.write_text("# Launch Notes\n\nBeta markdown evidence mentions Sierra revenue planning.", encoding="utf-8")
+
+        client = _client(app)
+        try:
+            first = await client.post(
+                "/api/knowledge/ingestions",
+                json={
+                    "source_type": "file",
+                    "source_uri": "/mnt/user-data/uploads/knowledge-live.txt",
+                    "media_type": "text/plain",
+                    "idempotency_key": "file-txt-once",
+                },
+                headers=_headers(owner_id),
+            )
+            assert first.status_code == 202
+            first_body = first.json()
+            forbidden = {"workspace_id", "user_id", "thread_id", "actor_id"}
+            async with app.state.knowledge_provider.database.session_factory() as session:
+                payload = (
+                    await session.execute(text("SELECT payload FROM knowledge_jobs WHERE id = :job_id"), {"job_id": first_body["job_id"]})
+                ).scalar_one()
+            assert not (forbidden & set(payload))
+            assert {"_trusted_user_id", "_trusted_thread_id", "_trusted_storage_root"} <= set(payload)
+
+            events = await _read_sse_until_terminal(client, first_body["job_id"], user_id=owner_id)
+            assert [seq for seq, _ in events] == sorted(seq for seq, _ in events)
+            terminal = await _wait_for_status(client, first_body["job_id"], {"SUCCEEDED", "FAILED"}, user_id=owner_id)
+            assert terminal["status"] == "SUCCEEDED", terminal
+            assert [event for _, event in events] == ["job_queued", "job_started", "job_progress", "job_succeeded"]
+            source_id = terminal["result_reference"]["source_id"]
+
+            duplicate = await client.post(
+                "/api/knowledge/ingestions",
+                json={
+                    "source_type": "file",
+                    "source_uri": "/mnt/user-data/uploads/knowledge-live.txt",
+                    "media_type": "text/plain",
+                    "idempotency_key": "file-txt-once",
+                },
+                headers=_headers(owner_id),
+            )
+            assert duplicate.status_code == 202
+            assert duplicate.json()["job_id"] == first_body["job_id"]
+
+            markdown = await client.post(
+                "/api/knowledge/ingestions",
+                json={
+                    "source_type": "file",
+                    "source_uri": "/mnt/user-data/uploads/knowledge-live.md",
+                    "media_type": "text/markdown",
+                    "idempotency_key": "file-md-once",
+                },
+                headers=_headers(owner_id),
+            )
+            assert markdown.status_code == 202
+            await _wait_for_status(client, markdown.json()["job_id"], {"SUCCEEDED"}, user_id=owner_id)
+
+            sources = await client.get("/api/knowledge/sources", headers=_headers(owner_id))
+            assert sources.status_code == 200
+            assert len(sources.json()["data"]) == 2
+            overview = await client.get("/api/knowledge/overview", headers=_headers(owner_id))
+            assert overview.status_code == 200
+            assert overview.json()["stats"]["sources"] == 2
+
+            detail = await client.get(f"/api/knowledge/sources/{source_id}/detail", headers=_headers(owner_id))
+            assert detail.status_code == 200
+            detail_body = detail.json()
+            assert detail_body["source"]["source_id"] == source_id
+            assert detail_body["revisions"]
+            assert detail_body["chunks"]
+
+            search = await client.post("/api/knowledge/search", json={"query": "Alpha deterministic retrieval", "context_budget": 4000}, headers=_headers(owner_id))
+            assert search.status_code == 200
+            search_body = search.json()
+            assert search_body["retrieved_chunks"]
+            retrieved = search_body["retrieved_chunks"][0]
+            assert retrieved["source_id"] == source_id
+            assert "deterministic retrieval" in retrieved["content"]
+            assert retrieved["provenance"]["chunk_id"]
+            assert retrieved["provenance"]["start_offset"] == 0
+
+            isolated = await client.get("/api/knowledge/sources", headers=_headers("owner-b"))
+            assert isolated.status_code == 200
+            assert isolated.json()["data"] == []
+
+            async with app.state.knowledge_provider.database.session_factory() as session:
+                assert (await session.execute(select(Source))).scalars().all()
+                assert (await session.execute(select(SourceSnapshot))).scalars().all()
+                assert (await session.execute(select(DocumentRevision))).scalars().all()
+                assert (await session.execute(select(Chunk))).scalars().all()
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_url_ingestion_ssrf_rejection_and_sse_reconnect(fullstack_gateway_config, migrated_knowledge_db, monkeypatch) -> None:
+    import deerflow.knowledge.ingestion.acquisition as acquisition
+    from app.gateway.app import create_app
+
+    async def allow_localhost_for_test(url: str) -> None:
+        return None
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        client = _client(app)
+        try:
+            cancellable = await client.post(
+                "/api/knowledge/ingestions",
+                json={"source_type": "url", "source_uri": "https://example.invalid/cancel-me", "idempotency_key": "cancel-me"},
+                headers=_headers(),
+            )
+            assert cancellable.status_code == 202
+            cancelled = await client.post(f"/api/knowledge/ingestions/{cancellable.json()['job_id']}/cancel", headers=_headers())
+            assert cancelled.status_code == 202
+            cancelled_status = await client.get(f"/api/knowledge/jobs/{cancellable.json()['job_id']}", headers=_headers())
+            assert cancelled_status.status_code == 200
+            assert cancelled_status.json()["status"] == "CANCEL_REQUESTED"
+
+            blocked = await client.post(
+                "/api/knowledge/ingestions",
+                json={"source_type": "url", "source_uri": "http://127.0.0.1/private", "idempotency_key": "blocked-local-url"},
+                headers=_headers(),
+            )
+            assert blocked.status_code == 202
+            blocked_terminal = await _wait_for_status(client, blocked.json()["job_id"], {"FAILED"})
+            assert blocked_terminal["error_type"] in {"SSRFBlockedError", "AcquisitionError"}
+
+            monkeypatch.setattr(acquisition, "assert_safe_http_url", allow_localhost_for_test)
+            async for url in _local_http_server(b"<html><title>Local Fixture</title><h1>Fixture</h1><p>Gamma URL ingestion evidence is searchable.</p></html>"):
+                accepted = await client.post(
+                    "/api/knowledge/ingestions",
+                    json={"source_type": "url", "source_uri": url, "idempotency_key": "allowed-local-url"},
+                    headers=_headers(),
+                )
+                assert accepted.status_code == 202
+                job_id = accepted.json()["job_id"]
+                first_stream = await client.get(f"/api/knowledge/jobs/{job_id}/events?limit=1", headers=_headers())
+                assert first_stream.status_code == 200
+                assert "id: 1" in first_stream.text
+                reconnected = await client.get(f"/api/knowledge/jobs/{job_id}/events?after_seq=1&limit=10", headers=_headers(), timeout=10)
+                assert reconnected.status_code == 200
+                assert "id: 1" not in reconnected.text
+                terminal = await _wait_for_status(client, job_id, {"SUCCEEDED"})
+                source_id = terminal["result_reference"]["source_id"]
+                detail = await client.get(f"/api/knowledge/sources/{source_id}/detail", headers=_headers())
+                assert detail.status_code == 200
+                assert "Gamma URL ingestion evidence" in detail.text
+                search = await client.post("/api/knowledge/search", json={"query": "Gamma searchable", "context_budget": 4000}, headers=_headers())
+                assert search.status_code == 200
+                assert search.json()["retrieved_chunks"]
+                break
+        finally:
+            await client.aclose()

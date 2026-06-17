@@ -56,7 +56,10 @@ export class GatewayKnowledgeTransport implements KnowledgeTransport {
   private readonly config: KnowledgeFrontendConfig;
   private readonly fetchFn: FetchLike;
 
-  constructor(config: KnowledgeFrontendConfig, fetchFn: FetchLike = fetch) {
+  constructor(
+    config: KnowledgeFrontendConfig,
+    fetchFn: FetchLike = globalThis.fetch.bind(globalThis),
+  ) {
     this.config = config;
     this.fetchFn = fetchFn;
   }
