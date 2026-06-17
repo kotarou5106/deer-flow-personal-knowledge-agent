@@ -14,14 +14,14 @@ def _load_migration_module():
     return module
 
 
-def test_migration_enables_pgvector_without_dropping_shared_extension() -> None:
+def test_migration_enables_pgvector_without_dropping_shared_extension(monkeypatch) -> None:
     module = _load_migration_module()
 
     operations: list[str] = []
-    module.op.execute = operations.append
-    module.op.get_bind = lambda: None
-    module.KnowledgeBase.metadata.create_all = lambda bind: operations.append("create_all")
-    module.KnowledgeBase.metadata.drop_all = lambda bind: operations.append("drop_all")
+    monkeypatch.setattr(module.op, "execute", operations.append)
+    monkeypatch.setattr(module.op, "get_bind", lambda: None)
+    monkeypatch.setattr(module.KnowledgeBase.metadata, "create_all", lambda bind: operations.append("create_all"))
+    monkeypatch.setattr(module.KnowledgeBase.metadata, "drop_all", lambda bind: operations.append("drop_all"))
 
     module.upgrade()
     module.downgrade()

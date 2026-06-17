@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKeyConstraint, Index, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKeyConstraint, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,8 +16,14 @@ class WorkflowRun(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
 
     workflow_type: Mapped[str] = mapped_column(String(128), nullable=False)
     input: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    status: Mapped[WorkflowStatus] = mapped_column(Enum(WorkflowStatus, native_enum=False, create_constraint=True), nullable=False, default=WorkflowStatus.PENDING)
+    status: Mapped[WorkflowStatus] = mapped_column(
+        Enum(WorkflowStatus, native_enum=False, create_constraint=True, name="knowledge_workflow_runs_status_check"),
+        nullable=False,
+        default=WorkflowStatus.PENDING,
+    )
     current_step: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
@@ -25,7 +31,55 @@ class WorkflowRun(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
 
     __table_args__ = (
         UniqueConstraint("id", "workspace_id", name="uq_knowledge_workflow_runs_id_workspace"),
+        Index(
+            "uq_knowledge_workflow_runs_idempotency",
+            "workspace_id",
+            "workflow_type",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
         Index("ix_knowledge_workflow_runs_workspace_status", "workspace_id", "status", "created_at"),
+    )
+
+
+class WorkflowStepRun(UUIDPrimaryKeyMixin, WorkspaceMixin, KnowledgeBase):
+    __tablename__ = "knowledge_workflow_step_runs"
+
+    workflow_run_id: Mapped[UUID] = mapped_column(postgresql.UUID(as_uuid=True), nullable=False)
+    step_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    sequence: Mapped[int] = mapped_column(nullable=False)
+    status: Mapped[WorkflowStatus] = mapped_column(
+        Enum(WorkflowStatus, native_enum=False, create_constraint=True, name="knowledge_workflow_step_runs_status_check"),
+        nullable=False,
+        default=WorkflowStatus.PENDING,
+    )
+    input_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    output_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    attempt: Mapped[int] = mapped_column(nullable=False, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_knowledge_workflow_step_runs_id_workspace"),
+        UniqueConstraint("workflow_run_id", "step_key", name="uq_knowledge_workflow_steps_key"),
+        UniqueConstraint("workflow_run_id", "sequence", name="uq_knowledge_workflow_steps_sequence"),
+        UniqueConstraint("workspace_id", "idempotency_key", name="uq_knowledge_workflow_steps_idempotency"),
+        CheckConstraint("sequence >= 0", name="ck_knowledge_workflow_steps_sequence_nonnegative"),
+        CheckConstraint("attempt >= 0", name="ck_knowledge_workflow_steps_attempt_nonnegative"),
+        ForeignKeyConstraint(
+            ["workflow_run_id", "workspace_id"],
+            ["knowledge_workflow_runs.id", "knowledge_workflow_runs.workspace_id"],
+            name="fk_knowledge_workflow_steps_run_workspace",
+            ondelete="CASCADE",
+        ),
+        Index("ix_knowledge_workflow_steps_workspace_run", "workspace_id", "workflow_run_id", "sequence"),
+        Index("ix_knowledge_workflow_steps_workspace_status", "workspace_id", "status", "updated_at"),
     )
 
 

@@ -21,6 +21,7 @@ EXPECTED_TABLES = {
     "knowledge_artifacts",
     "knowledge_artifact_evidence_links",
     "knowledge_workflow_runs",
+    "knowledge_workflow_step_runs",
     "knowledge_workflow_artifacts",
     "knowledge_approval_requests",
     "knowledge_action_executions",

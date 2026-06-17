@@ -55,8 +55,13 @@ class ArtifactStalenessStatus(StrEnum):
 
 
 class WorkflowStatus(StrEnum):
+    DRAFT = "draft"
+    READY = "ready"
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    REQUIRES_APPROVAL = "requires_approval"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"

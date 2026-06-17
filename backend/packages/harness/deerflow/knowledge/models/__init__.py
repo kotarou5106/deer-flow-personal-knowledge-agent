@@ -21,7 +21,7 @@ from deerflow.knowledge.models.knowledge import (
     Topic,
 )
 from deerflow.knowledge.models.source import Chunk, DocumentRevision, IngestionJob, Source, SourceSnapshot
-from deerflow.knowledge.models.workflow import ActionExecution, ApprovalRequest, WorkflowArtifact, WorkflowRun
+from deerflow.knowledge.models.workflow import ActionExecution, ApprovalRequest, WorkflowArtifact, WorkflowRun, WorkflowStepRun
 
 __all__ = [
     "ActionExecution",
@@ -54,4 +54,5 @@ __all__ = [
     "Topic",
     "WorkflowArtifact",
     "WorkflowRun",
+    "WorkflowStepRun",
 ]

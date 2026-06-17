@@ -24,6 +24,7 @@ from deerflow.knowledge.repositories import (
     SnapshotRepository,
     SourceRepository,
     WorkflowRunRepository,
+    WorkflowStepRunRepository,
 )
 
 
@@ -54,6 +55,7 @@ class KnowledgeUnitOfWork:
         self.artifacts = ArtifactRepository(self.session)
         self.artifact_evidence_links = ArtifactEvidenceLinkRepository(self.session)
         self.workflow_runs = WorkflowRunRepository(self.session)
+        self.workflow_steps = WorkflowStepRunRepository(self.session)
         self.approval_requests = ApprovalRequestRepository(self.session)
         self.action_executions = ActionExecutionRepository(self.session)
         self.audit_logs = AuditLogRepository(self.session)

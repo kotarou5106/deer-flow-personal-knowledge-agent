@@ -11,7 +11,7 @@ from deerflow.knowledge.repositories.knowledge import (
     RelationRepository,
 )
 from deerflow.knowledge.repositories.source import ChunkRepository, RevisionRepository, SnapshotRepository, SourceRepository
-from deerflow.knowledge.repositories.workflow import ActionExecutionRepository, ApprovalRequestRepository, WorkflowRunRepository
+from deerflow.knowledge.repositories.workflow import ActionExecutionRepository, ApprovalRequestRepository, WorkflowRunRepository, WorkflowStepRunRepository
 
 __all__ = [
     "ActionExecutionRepository",
@@ -32,4 +32,5 @@ __all__ = [
     "SnapshotRepository",
     "SourceRepository",
     "WorkflowRunRepository",
+    "WorkflowStepRunRepository",
 ]
