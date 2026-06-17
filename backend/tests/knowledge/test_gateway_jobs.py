@@ -49,6 +49,9 @@ def test_gateway_registers_knowledge_routes() -> None:
     assert "/api/knowledge/jobs/{job_id}" in paths
     assert "/api/knowledge/jobs/{job_id}/events" in paths
     assert "/api/knowledge/search" in paths
+    assert "/api/knowledge/overview" in paths
+    assert "/api/knowledge/sources/{source_id}/detail" in paths
+    assert "/api/knowledge/workflows" in paths
 
 
 def _knowledge_headers() -> dict[str, str]:
@@ -93,7 +96,16 @@ class _FakeGatewayJobService:
 
 
 class _FakeGatewayProvider:
+    async def overview(self, context, payload):
+        return {"stats": {"sources": 1}, "recent_sources": [], "running_jobs": [], "recent_artifacts": [], "pending_approvals": []}
+
     async def list_sources(self, context, payload):
+        return {"data": [], "pagination": {"limit": payload["limit"], "offset": payload["offset"]}}
+
+    async def get_source_detail(self, context, source_id):
+        return {"source": {"source_id": str(source_id)}, "revisions": [], "chunks": [], "claims": [], "relations": [], "evidence": [], "jobs": []}
+
+    async def list_workflows(self, context, payload):
         return {"data": [], "pagination": {"limit": payload["limit"], "offset": payload["offset"]}}
 
     async def action_execute(self, context, approval_request_id):
@@ -147,6 +159,35 @@ def test_gateway_list_endpoint_paginates_and_caps_limit(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["pagination"] == {"limit": 100, "offset": 2}
+
+
+def test_gateway_overview_uses_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+
+    response = client.get("/api/knowledge/overview", headers=_knowledge_headers())
+
+    assert response.status_code == 200
+    assert response.json()["stats"] == {"sources": 1}
+
+
+def test_gateway_source_detail_uses_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+    source_id = uuid4()
+
+    response = client.get(f"/api/knowledge/sources/{source_id}/detail", headers=_knowledge_headers())
+
+    assert response.status_code == 200
+    assert response.json()["source"]["source_id"] == str(source_id)
+    assert response.json()["revisions"] == []
+
+
+def test_gateway_workflow_list_paginates(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+
+    response = client.get("/api/knowledge/workflows?limit=20&offset=3", headers=_knowledge_headers())
+
+    assert response.status_code == 200
+    assert response.json()["pagination"] == {"limit": 20, "offset": 3}
 
 
 def test_gateway_unconfigured_job_api_returns_structured_service_not_configured(monkeypatch) -> None:

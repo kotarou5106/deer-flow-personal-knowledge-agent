@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import SecretStr
+from sqlalchemy import func, select
 
 from deerflow.knowledge.config import KnowledgeDatabaseConfig
 from deerflow.knowledge.database import KnowledgeDatabase
@@ -34,6 +35,8 @@ class KnowledgeServiceProvider(Protocol):
 
     async def ingestion_status(self, context: TrustedKnowledgeContext, job_id: str) -> dict[str, Any]: ...
 
+    async def overview(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
+
     async def search(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def analyze(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
@@ -41,6 +44,8 @@ class KnowledgeServiceProvider(Protocol):
     async def get_source(self, context: TrustedKnowledgeContext, source_id: str) -> dict[str, Any]: ...
 
     async def list_sources(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def get_source_detail(self, context: TrustedKnowledgeContext, source_id: str) -> dict[str, Any]: ...
 
     async def list_source_revisions(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -57,6 +62,8 @@ class KnowledgeServiceProvider(Protocol):
     async def generate_update_report(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def workflow_create(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def list_workflows(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def workflow_get(self, context: TrustedKnowledgeContext, workflow_run_id: str) -> dict[str, Any]: ...
 
@@ -105,6 +112,9 @@ class UnconfiguredKnowledgeServiceProvider:
     async def ingestion_status(self, context: TrustedKnowledgeContext, job_id: str) -> dict[str, Any]:
         self._unavailable()
 
+    async def overview(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        self._unavailable()
+
     async def search(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         self._unavailable()
 
@@ -115,6 +125,9 @@ class UnconfiguredKnowledgeServiceProvider:
         self._unavailable()
 
     async def list_sources(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        self._unavailable()
+
+    async def get_source_detail(self, context: TrustedKnowledgeContext, source_id: str) -> dict[str, Any]:
         self._unavailable()
 
     async def list_source_revisions(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +152,9 @@ class UnconfiguredKnowledgeServiceProvider:
         self._unavailable()
 
     async def workflow_create(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        self._unavailable()
+
+    async def list_workflows(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         self._unavailable()
 
     async def workflow_get(self, context: TrustedKnowledgeContext, workflow_run_id: str) -> dict[str, Any]:
@@ -281,6 +297,66 @@ class DatabaseKnowledgeServiceProvider:
                 "error": job.error,
             }
 
+    async def overview(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            from deerflow.knowledge.models import (
+                ApprovalRequest,
+                Artifact,
+                Claim,
+                ConflictGroup,
+                DocumentRevision,
+                Entity,
+                Relation,
+                Source,
+                WorkflowRun,
+            )
+
+            async def count(model: type) -> int:
+                result = await uow.session.execute(select(func.count()).select_from(model).where(model.workspace_id == context.workspace_id))
+                return int(result.scalar_one())
+
+            recent_sources = await uow.sources.list_for_workspace(context.workspace_id, limit=5, offset=0)
+            recent_artifacts = await uow.artifacts.list_for_workspace(context.workspace_id, limit=5, offset=0)
+            pending_approvals = await uow.approval_requests.list_for_workspace(context.workspace_id, limit=5, offset=0)
+            return {
+                "stats": {
+                    "sources": await count(Source),
+                    "revisions": await count(DocumentRevision),
+                    "claims": await count(Claim),
+                    "entities": await count(Entity),
+                    "relations": await count(Relation),
+                    "conflicts": await count(ConflictGroup),
+                    "workflows": await count(WorkflowRun),
+                    "artifacts": await count(Artifact),
+                    "approvals": await count(ApprovalRequest),
+                },
+                "recent_sources": [
+                    {
+                        "source_id": str(source.id),
+                        "source_type": source.source_type,
+                        "canonical_uri": source.canonical_uri,
+                        "title": source.title,
+                        "status": source.status.value,
+                        "updated_at": source.updated_at.astimezone(UTC).isoformat(),
+                    }
+                    for source in recent_sources
+                ],
+                "running_jobs": [],
+                "recent_artifacts": [
+                    {
+                        "artifact_id": str(artifact.id),
+                        "artifact_type": artifact.artifact_type,
+                        "title": artifact.title,
+                        "validation_status": artifact.validation_status.value,
+                        "staleness_status": artifact.staleness_status.value,
+                        "created_at": artifact.created_at.astimezone(UTC).isoformat(),
+                    }
+                    for artifact in recent_artifacts
+                ],
+                "pending_approvals": [_approval_payload(row) for row in pending_approvals],
+            }
+
     async def search(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         result = await RetrievalService(self._session_factory).retrieve(
             workspace_id=context.workspace_id,
@@ -360,6 +436,140 @@ class DatabaseKnowledgeServiceProvider:
                 "pagination": {"limit": limit, "offset": offset},
             }
 
+    async def get_source_detail(self, context: TrustedKnowledgeContext, source_id: str) -> dict[str, Any]:
+        source_uuid = _uuid(source_id, "source_id")
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            source = await uow.sources.get_by_id(context.workspace_id, source_uuid)
+            if source is None:
+                raise ValueError("Source does not belong to workspace")
+            revisions = await uow.revisions.list_for_source(context.workspace_id, source_uuid)
+            revision_ids = [revision.id for revision in revisions]
+            chunks = []
+            evidence = []
+            claims = []
+            relations = []
+            ingestion_jobs = []
+            if revision_ids:
+                assert uow.session is not None
+                from deerflow.knowledge.models import Chunk, Claim, ClaimEvidenceLink, EvidenceSpan, IngestionJob, Relation
+
+                chunk_result = await uow.session.execute(
+                    select(Chunk).where(Chunk.workspace_id == context.workspace_id, Chunk.revision_id.in_(revision_ids)).order_by(Chunk.revision_id, Chunk.chunk_index)
+                )
+                chunk_rows = list(chunk_result.scalars().all())
+                chunk_ids = [chunk.id for chunk in chunk_rows]
+                chunks = [
+                    {
+                        "chunk_id": str(chunk.id),
+                        "revision_id": str(chunk.revision_id),
+                        "parent_chunk_id": str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
+                        "chunk_index": chunk.chunk_index,
+                        "token_count": chunk.token_count,
+                        "content": chunk.content,
+                        "page_number": chunk.page_number,
+                        "section_path": _jsonable(chunk.section_path or []),
+                        "start_offset": chunk.start_offset,
+                        "end_offset": chunk.end_offset,
+                    }
+                    for chunk in chunk_rows
+                ]
+                if chunk_ids:
+                    evidence_result = await uow.session.execute(
+                        select(EvidenceSpan).where(EvidenceSpan.workspace_id == context.workspace_id, EvidenceSpan.chunk_id.in_(chunk_ids)).order_by(EvidenceSpan.created_at)
+                    )
+                    evidence_rows = list(evidence_result.scalars().all())
+                    evidence_ids = [span.id for span in evidence_rows]
+                    evidence = [
+                        {
+                            "evidence_span_id": str(span.id),
+                            "chunk_id": str(span.chunk_id),
+                            "quoted_text": span.quoted_text,
+                            "start_offset": span.start_offset,
+                            "end_offset": span.end_offset,
+                            "page_number": span.page_number,
+                            "created_at": span.created_at.astimezone(UTC).isoformat(),
+                        }
+                        for span in evidence_rows
+                    ]
+                    if evidence_ids:
+                        claim_result = await uow.session.execute(
+                            select(Claim)
+                            .join(ClaimEvidenceLink, ClaimEvidenceLink.claim_id == Claim.id)
+                            .where(Claim.workspace_id == context.workspace_id, ClaimEvidenceLink.evidence_span_id.in_(evidence_ids))
+                            .distinct()
+                        )
+                        claims = [
+                            {
+                                "claim_id": str(claim.id),
+                                "claim_text": claim.claim_text,
+                                "status": claim.status.value,
+                                "stance": claim.stance.value,
+                                "confidence": claim.confidence,
+                            }
+                            for claim in claim_result.scalars().all()
+                        ]
+                        relation_result = await uow.session.execute(
+                            select(Relation).where(Relation.workspace_id == context.workspace_id, Relation.evidence_span_id.in_(evidence_ids)).distinct()
+                        )
+                        relations = [
+                            {
+                                "relation_id": str(relation.id),
+                                "source_entity_id": str(relation.source_entity_id),
+                                "target_entity_id": str(relation.target_entity_id),
+                                "relation_type": relation.relation_type,
+                                "evidence_span_id": str(relation.evidence_span_id),
+                                "confidence": relation.confidence,
+                            }
+                            for relation in relation_result.scalars().all()
+                        ]
+                jobs_result = await uow.session.execute(
+                    select(IngestionJob).where(IngestionJob.workspace_id == context.workspace_id, IngestionJob.source_id == source_uuid).order_by(IngestionJob.created_at.desc())
+                )
+                ingestion_jobs = [
+                    {
+                        "job_id": str(job.id),
+                        "status": job.status.value,
+                        "revision_id": str(job.revision_id) if job.revision_id else None,
+                        "created_at": job.created_at.astimezone(UTC).isoformat(),
+                        "completed_at": job.completed_at.astimezone(UTC).isoformat() if job.completed_at else None,
+                        "error": job.error,
+                    }
+                    for job in jobs_result.scalars().all()
+                ]
+            return {
+                "source": {
+                    "source_id": str(source.id),
+                    "source_type": source.source_type,
+                    "canonical_uri": source.canonical_uri,
+                    "title": source.title,
+                    "author": source.author,
+                    "latest_snapshot_id": str(source.latest_snapshot_id) if source.latest_snapshot_id else None,
+                    "status": source.status.value,
+                    "metadata": _jsonable(source.metadata_json or {}),
+                    "created_at": source.created_at.astimezone(UTC).isoformat(),
+                    "updated_at": source.updated_at.astimezone(UTC).isoformat(),
+                },
+                "revisions": [
+                    {
+                        "revision_id": str(revision.id),
+                        "source_id": str(revision.source_id),
+                        "snapshot_id": str(revision.snapshot_id),
+                        "revision_number": revision.revision_number,
+                        "previous_revision_id": str(revision.previous_revision_id) if revision.previous_revision_id else None,
+                        "content_hash": revision.content_hash,
+                        "parse_status": revision.parse_status.value,
+                        "index_status": revision.index_status.value,
+                        "created_at": revision.created_at.astimezone(UTC).isoformat(),
+                    }
+                    for revision in revisions
+                ],
+                "chunks": chunks,
+                "claims": claims,
+                "relations": relations,
+                "evidence": evidence,
+                "jobs": ingestion_jobs,
+            }
+
     async def get_revision(self, context: TrustedKnowledgeContext, revision_id: str) -> dict[str, Any]:
         async with KnowledgeUnitOfWork(self._session_factory) as uow:
             revision = await uow.revisions.get_by_id(context.workspace_id, _uuid(revision_id, "revision_id"))
@@ -423,6 +633,30 @@ class DatabaseKnowledgeServiceProvider:
 
     async def workflow_create(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         raise KnowledgeServiceUnavailableError("Workflow handler services are not configured")
+
+    async def list_workflows(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        limit = min(int(payload.get("limit") or 50), 100)
+        offset = max(int(payload.get("offset") or 0), 0)
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            rows = await uow.workflow_runs.list_for_workspace(context.workspace_id, limit=limit, offset=offset)
+            return {
+                "data": [
+                    {
+                        "workflow_run_id": str(run.id),
+                        "workflow_type": run.workflow_type,
+                        "status": run.status.value,
+                        "current_step": run.current_step,
+                        "input": _jsonable(run.input or {}),
+                        "metadata": _jsonable(run.metadata_json or {}),
+                        "created_at": run.created_at.astimezone(UTC).isoformat(),
+                        "updated_at": run.updated_at.astimezone(UTC).isoformat(),
+                        "completed_at": run.completed_at.astimezone(UTC).isoformat() if run.completed_at else None,
+                        "error": run.error,
+                    }
+                    for run in rows
+                ],
+                "pagination": {"limit": limit, "offset": offset},
+            }
 
     async def workflow_get(self, context: TrustedKnowledgeContext, workflow_run_id: str) -> dict[str, Any]:
         async with KnowledgeUnitOfWork(self._session_factory) as uow:

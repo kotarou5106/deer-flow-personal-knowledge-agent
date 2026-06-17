@@ -1,5 +1,6 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIcon,
   AlertTriangleIcon,
@@ -79,10 +80,22 @@ import type {
   KnowledgeActivityEvent,
   KnowledgeArtifact,
   KnowledgeCitation,
+  KnowledgeChunk,
+  KnowledgeClaim,
   KnowledgeConflict,
   KnowledgeImportDraft,
+  KnowledgeRevision,
+  KnowledgeSource,
+  KnowledgeSourceStatus,
+  KnowledgeSourceType,
+  KnowledgeWorkflow,
   KnowledgeWorkspaceDataset,
+  KnowledgeApproval,
+  RiskLevel,
+  SearchResult,
+  WorkflowStatus,
   WorkflowType,
+  ApprovalStatus,
 } from "@/core/knowledge/workspace-types";
 import { cn } from "@/lib/utils";
 
@@ -157,7 +170,7 @@ function renderView({
   onOpenCitation: (citation: KnowledgeCitation) => void;
 }) {
   if (!demoMode) {
-    return <ProductionUnavailable view={view} />;
+    return <ProductionGatewayView view={view} sourceId={sourceId} onOpenCitation={onOpenCitation} />;
   }
   if (view === "overview") return <OverviewView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "sources") return <SourcesView dataset={dataset} onOpenCitation={onOpenCitation} />;
@@ -166,9 +179,9 @@ function renderView({
   if (view === "analysis") return <AnalysisView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "graph") return <GraphView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "conflicts") return <ConflictsView dataset={dataset} onOpenCitation={onOpenCitation} />;
-  if (view === "workflows") return <WorkflowsView dataset={dataset} />;
+  if (view === "workflows") return <WorkflowsView dataset={dataset} demoMode={demoMode} />;
   if (view === "artifacts") return <ArtifactsView dataset={dataset} onOpenCitation={onOpenCitation} />;
-  if (view === "approvals") return <ApprovalsView dataset={dataset} />;
+  if (view === "approvals") return <ApprovalsView dataset={dataset} demoMode={demoMode} />;
   return <ActivityView dataset={dataset} />;
 }
 
@@ -275,6 +288,513 @@ function ProductionUnavailable({ view }: { view: KnowledgeWorkspaceView }) {
       </Link>
     </Empty>
   );
+}
+
+function ProductionGatewayView({
+  view,
+  sourceId,
+  onOpenCitation,
+}: {
+  view: KnowledgeWorkspaceView;
+  sourceId?: string;
+  onOpenCitation: (citation: KnowledgeCitation) => void;
+}) {
+  const client = useKnowledgeClient();
+  const overviewQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "overview"],
+    queryFn: ({ signal }) => client.getOverview({ signal }),
+    retry: false,
+  });
+  const sourcesQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "sources"],
+    queryFn: ({ signal }) => client.listSources({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+  const sourceDetailQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "source-detail", sourceId],
+    queryFn: ({ signal }) => client.getSourceDetail(sourceId ?? "", { signal }),
+    enabled: view === "source-detail" && Boolean(sourceId),
+    retry: false,
+  });
+  const activityQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "activity"],
+    queryFn: ({ signal }) => client.listActivity({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+  const claimsQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "claims"],
+    queryFn: ({ signal }) => client.listClaims({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+  const conflictsQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "conflicts"],
+    queryFn: ({ signal }) => client.listConflicts({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+  const workflowsQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "workflows"],
+    queryFn: ({ signal }) => client.listWorkflows({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+  const artifactsQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "artifacts"],
+    queryFn: ({ signal }) => client.listArtifacts({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+  const approvalsQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "approvals"],
+    queryFn: ({ signal }) => client.listApprovals({ limit: 100, offset: 0 }, { signal }),
+    retry: false,
+  });
+
+  if (view === "search") {
+    return <ProductionSearchView onOpenCitation={onOpenCitation} />;
+  }
+  if (view === "analysis" || view === "graph") {
+    return <ProductionUnavailable view={view} />;
+  }
+
+  const loading =
+    overviewQuery.isLoading ||
+    sourcesQuery.isLoading ||
+    activityQuery.isLoading ||
+    claimsQuery.isLoading ||
+    conflictsQuery.isLoading ||
+    workflowsQuery.isLoading ||
+    artifactsQuery.isLoading ||
+    approvalsQuery.isLoading ||
+    sourceDetailQuery.isLoading;
+  if (loading) return <Skeleton className="h-72" />;
+
+  const error = [
+    overviewQuery.error,
+    sourcesQuery.error,
+    activityQuery.error,
+    claimsQuery.error,
+    conflictsQuery.error,
+    workflowsQuery.error,
+    artifactsQuery.error,
+    approvalsQuery.error,
+    sourceDetailQuery.error,
+  ].find(Boolean);
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertTriangleIcon className="size-4" />
+        <AlertTitle>Knowledge Gateway unavailable</AlertTitle>
+        <AlertDescription>{error instanceof Error ? error.message : "Production Knowledge data could not be loaded."}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  const dataset = buildProductionDataset({
+    overview: overviewQuery.data,
+    sourcesEnvelope: sourcesQuery.data,
+    sourceDetail: sourceDetailQuery.data,
+    activityEnvelope: activityQuery.data,
+    claims: claimsQuery.data,
+    conflicts: conflictsQuery.data,
+    workflowsEnvelope: workflowsQuery.data,
+    artifactsEnvelope: artifactsQuery.data,
+    approvalsEnvelope: approvalsQuery.data,
+  });
+
+  if (view === "overview") return <OverviewView dataset={dataset} onOpenCitation={onOpenCitation} />;
+  if (view === "sources") return <SourcesView dataset={dataset} onOpenCitation={onOpenCitation} />;
+  if (view === "source-detail") return <SourceDetailView dataset={dataset} sourceId={sourceId} onOpenCitation={onOpenCitation} />;
+  if (view === "conflicts") return <ConflictsView dataset={dataset} onOpenCitation={onOpenCitation} />;
+  if (view === "workflows") return <WorkflowsView dataset={dataset} demoMode={false} />;
+  if (view === "artifacts") return <ArtifactsView dataset={dataset} onOpenCitation={onOpenCitation} />;
+  if (view === "approvals") return <ApprovalsView dataset={dataset} demoMode={false} />;
+  return <ActivityView dataset={dataset} />;
+}
+
+function ProductionSearchView({ onOpenCitation }: { onOpenCitation: (citation: KnowledgeCitation) => void }) {
+  const client = useKnowledgeClient();
+  const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState<string | null>(null);
+  const searchQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "search", submittedQuery],
+    queryFn: ({ signal }) => client.search({ query: submittedQuery ?? "", context_budget: 4000 }, { signal }),
+    enabled: Boolean(submittedQuery),
+    retry: false,
+  });
+  const dataset = emptyProductionDataset();
+  const results = mapSearchResults(searchQuery.data);
+  dataset.searchResults = results;
+
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader><CardTitle>Hybrid retrieval</CardTitle><CardDescription>Production search calls the Gateway retrieval endpoint.</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+            <Input aria-label="Knowledge search query" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search your knowledge base" />
+            <Button onClick={() => setSubmittedQuery(query.trim())} disabled={searchQuery.isLoading || query.trim().length === 0}>{searchQuery.isLoading ? <Loader2Icon className="size-4 animate-spin" /> : <SearchIcon className="size-4" />} Search</Button>
+          </div>
+        </CardContent>
+      </Card>
+      {searchQuery.error ? (
+        <Alert variant="destructive"><AlertTriangleIcon className="size-4" /><AlertTitle>Search failed</AlertTitle><AlertDescription>{searchQuery.error instanceof Error ? searchQuery.error.message : "Search request failed."}</AlertDescription></Alert>
+      ) : searchQuery.isLoading ? <Skeleton className="h-48" /> : !submittedQuery ? <EmptyState title="Enter a query to search production knowledge" /> : (
+        <div className="grid gap-3">
+          <div className="text-sm text-muted-foreground">{formatKnowledgeCount(results.length, "result")}</div>
+          {results.length === 0 ? <EmptyState title="No evidence matched the query" /> : results.map((result) => (
+            <Card key={result.id}>
+              <CardHeader><CardTitle>{result.title}</CardTitle><CardDescription>{result.retrievalChannels.join(" / ") || "Gateway retrieval"}</CardDescription></CardHeader>
+              <CardContent className="space-y-3">
+                <p>{result.snippet}</p>
+                <CitationRow citationIds={result.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function emptyProductionDataset(): KnowledgeWorkspaceDataset {
+  return {
+    sources: [],
+    citations: [],
+    entities: [],
+    claims: [],
+    relations: [],
+    jobs: [],
+    jobEvents: {},
+    searchResults: [],
+    analysis: {
+      query: "",
+      answer: "",
+      supportedFacts: [],
+      inferredConclusions: [],
+      unsupportedClaims: [],
+      unresolvedQuestions: [],
+      sourceIds: [],
+    },
+    graph: { nodes: [], edges: [] },
+    conflicts: [],
+    workflows: [],
+    artifacts: [],
+    approvals: [],
+    activity: [],
+  };
+}
+
+function buildProductionDataset(input: {
+  overview?: Record<string, unknown>;
+  sourcesEnvelope?: { data: Record<string, unknown>[] };
+  sourceDetail?: Record<string, unknown>;
+  activityEnvelope?: { data: Record<string, unknown>[] };
+  claims?: Record<string, unknown>;
+  conflicts?: Record<string, unknown>;
+  workflowsEnvelope?: { data: Record<string, unknown>[] };
+  artifactsEnvelope?: { data: Record<string, unknown>[] };
+  approvalsEnvelope?: { data: Record<string, unknown>[] };
+}): KnowledgeWorkspaceDataset {
+  const dataset = emptyProductionDataset();
+  const sources = input.sourcesEnvelope?.data ?? [];
+  dataset.sources = sources.map(mapSourceSummary);
+
+  const sourceDetail = input.sourceDetail;
+  if (sourceDetail) {
+    const detailSource = mapSourceDetail(sourceDetail);
+    dataset.sources = [
+      detailSource,
+      ...dataset.sources.filter((source) => source.id !== detailSource.id),
+    ];
+    dataset.citations = mapEvidenceToCitations(sourceDetail, detailSource);
+    dataset.jobs = mapDetailJobs(sourceDetail);
+  }
+
+  dataset.claims = readArray(input.claims, "data").map(mapClaim);
+  dataset.conflicts = readArray(input.conflicts, "data").map(mapConflict);
+  dataset.workflows = (input.workflowsEnvelope?.data ?? []).map(mapWorkflow);
+  dataset.artifacts = (input.artifactsEnvelope?.data ?? []).map(mapArtifact);
+  dataset.approvals = (input.approvalsEnvelope?.data ?? []).map(mapApproval);
+  dataset.activity = [
+    ...mapActivity(input.activityEnvelope?.data ?? []),
+    ...mapOverviewActivity(input.overview),
+  ];
+  return dataset;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readArray(value: unknown, key: string): Record<string, unknown>[] {
+  const array = asRecord(value)[key];
+  return Array.isArray(array) ? array.map(asRecord) : [];
+}
+
+function readString(value: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const item = value[key];
+    if (typeof item === "string" && item.length > 0) return item;
+  }
+  return "";
+}
+
+function readNumber(value: Record<string, unknown>, key: string, fallback = 0): number {
+  const item = value[key];
+  return typeof item === "number" && Number.isFinite(item) ? item : fallback;
+}
+
+function mapSourceType(value: string): KnowledgeSourceType {
+  const lower = value.toLowerCase();
+  if (["pdf", "docx", "pptx", "xlsx", "markdown", "txt", "html", "url"].includes(lower)) return lower as KnowledgeSourceType;
+  if (lower.includes("url") || lower.includes("html")) return "url";
+  if (lower.includes("markdown") || lower === "md") return "markdown";
+  if (lower.includes("text") || lower.includes("file")) return "txt";
+  return "txt";
+}
+
+function mapSourceStatus(value: string): KnowledgeSourceStatus {
+  const upper = value.toUpperCase();
+  if (["ACTIVE", "PARSING", "INDEXING", "FAILED", "ARCHIVED"].includes(upper)) return upper as KnowledgeSourceStatus;
+  return "ACTIVE";
+}
+
+function mapSourceSummary(raw: Record<string, unknown>): KnowledgeSource {
+  const id = readString(raw, "source_id", "id");
+  const title = readString(raw, "title") || readString(raw, "canonical_uri", "canonicalUri") || id;
+  return {
+    id,
+    sourceType: mapSourceType(readString(raw, "source_type", "sourceType")),
+    canonicalUri: readString(raw, "canonical_uri", "canonicalUri"),
+    title,
+    status: mapSourceStatus(readString(raw, "status")),
+    currentRevisionId: readString(raw, "current_revision_id", "revision_id", "latest_revision_id"),
+    claimCount: readNumber(raw, "claim_count"),
+    chunkCount: readNumber(raw, "chunk_count"),
+    updatedAt: readString(raw, "updated_at", "created_at"),
+    revisions: [],
+    diff: [],
+  };
+}
+
+function mapRevision(raw: Record<string, unknown>, chunks: KnowledgeChunk[]): KnowledgeRevision {
+  const id = readString(raw, "revision_id", "id");
+  return {
+    id,
+    sourceId: readString(raw, "source_id", "sourceId"),
+    revisionNumber: readNumber(raw, "revision_number", 1),
+    previousRevisionId: readString(raw, "previous_revision_id") || undefined,
+    contentHash: readString(raw, "content_hash"),
+    parseStatus: readString(raw, "parse_status").toUpperCase() === "FAILED" ? "FAILED" : readString(raw, "parse_status").toUpperCase() === "PENDING" ? "PENDING" : "SUCCEEDED",
+    indexStatus: readString(raw, "index_status").toUpperCase() === "FAILED" ? "FAILED" : readString(raw, "index_status").toUpperCase() === "PENDING" ? "PENDING" : "SUCCEEDED",
+    createdAt: readString(raw, "created_at"),
+    chunks,
+  };
+}
+
+function mapChunk(raw: Record<string, unknown>): KnowledgeChunk {
+  return {
+    id: readString(raw, "chunk_id", "id"),
+    revisionId: readString(raw, "revision_id", "revisionId"),
+    parentChunkId: readString(raw, "parent_chunk_id") || undefined,
+    chunkIndex: readNumber(raw, "chunk_index"),
+    tokenCount: readNumber(raw, "token_count"),
+    content: readString(raw, "content"),
+    pageNumber: readNumber(raw, "page_number") || undefined,
+    sectionPath: Array.isArray(raw.section_path) ? raw.section_path.filter((item): item is string => typeof item === "string") : [],
+    startOffset: readNumber(raw, "start_offset"),
+    endOffset: readNumber(raw, "end_offset"),
+  };
+}
+
+function mapSourceDetail(raw: Record<string, unknown>): KnowledgeSource {
+  const source = mapSourceSummary(asRecord(raw.source));
+  const chunks = readArray(raw, "chunks").map(mapChunk);
+  const revisions = readArray(raw, "revisions").map((revision) => mapRevision(revision, chunks.filter((chunk) => chunk.revisionId === readString(revision, "revision_id", "id"))));
+  const currentRevision = revisions.at(0);
+  return {
+    ...source,
+    currentRevisionId: currentRevision?.id ?? source.currentRevisionId,
+    claimCount: readArray(raw, "claims").length,
+    chunkCount: chunks.length,
+    updatedAt: source.updatedAt ?? currentRevision?.createdAt ?? "",
+    revisions,
+  };
+}
+
+function mapEvidenceToCitations(raw: Record<string, unknown>, source: KnowledgeSource): KnowledgeCitation[] {
+  const revisions = source.revisions;
+  const chunks = revisions.flatMap((revision) => revision.chunks);
+  return readArray(raw, "evidence").map((span) => {
+    const chunk = chunks.find((item) => item.id === readString(span, "chunk_id"));
+    const revision = revisions.find((item) => item.id === chunk?.revisionId);
+    return {
+      citationId: readString(span, "evidence_span_id", "id"),
+      sourceId: source.id,
+      revisionId: revision?.id ?? "",
+      chunkId: chunk?.id ?? "",
+      evidenceSpanId: readString(span, "evidence_span_id", "id"),
+      sourceTitle: source.title,
+      sourceUri: source.canonicalUri,
+      quotedText: readString(span, "quoted_text"),
+      pageNumber: readNumber(span, "page_number") || undefined,
+      sectionPath: chunk?.sectionPath,
+      startOffset: readNumber(span, "start_offset"),
+      endOffset: readNumber(span, "end_offset"),
+      role: "direct",
+    };
+  });
+}
+
+function mapDetailJobs(raw: Record<string, unknown>): KnowledgeWorkspaceDataset["jobs"] {
+  return readArray(raw, "jobs").map((job) => ({
+    job_id: readString(job, "job_id", "id"),
+    workspace_id: "",
+    job_type: "ingestion",
+    status: ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "CANCELLED", "RETRY_SCHEDULED"].includes(readString(job, "status")) ? readString(job, "status") as KnowledgeWorkspaceDataset["jobs"][number]["status"] : "SUCCEEDED",
+    payload_hash: "",
+    idempotency_key: null,
+    attempt: 1,
+    max_attempts: 1,
+    progress: {},
+    created_at: readString(job, "created_at"),
+    started_at: null,
+    completed_at: readString(job, "completed_at") || null,
+    error_type: null,
+    error_message: readString(job, "error") || null,
+    result_reference: null,
+  }));
+}
+
+function mapClaim(raw: Record<string, unknown>): KnowledgeClaim {
+  return {
+    id: readString(raw, "claim_id", "id"),
+    text: readString(raw, "claim_text", "text"),
+    normalizedSubject: readString(raw, "normalized_subject"),
+    predicate: readString(raw, "predicate"),
+    normalizedObject: readString(raw, "normalized_object"),
+    stance: readString(raw, "stance").toUpperCase() === "CONTRADICTS" ? "CONTRADICTS" : readString(raw, "stance").toUpperCase() === "SUPPORTS" ? "SUPPORTS" : "NEUTRAL",
+    confidence: readNumber(raw, "confidence"),
+    status: "CURRENT_ACTIVE",
+    citationIds: [],
+  };
+}
+
+function mapConflict(raw: Record<string, unknown>): KnowledgeConflict {
+  return {
+    id: readString(raw, "conflict_group_id", "id"),
+    classification: "POSSIBLE_CONFLICT",
+    status: readString(raw, "status").toUpperCase() === "REVIEWED" ? "REVIEWED" : "UNRESOLVED",
+    summary: readString(raw, "summary") || "Conflict requires review",
+    claimIds: [],
+    citationIds: [],
+    scopeOrCondition: "",
+    activeClaimId: "",
+    affectedArtifactIds: [],
+    recommendedNextStep: "Review the affected claims in the Knowledge domain.",
+    updatedAt: readString(raw, "updated_at", "created_at"),
+  };
+}
+
+function mapWorkflow(raw: Record<string, unknown>): KnowledgeWorkflow {
+  const id = readString(raw, "workflow_run_id", "id");
+  return {
+    id,
+    workflowType: (readString(raw, "workflow_type") as WorkflowType) || "decision_memo",
+    title: readString(raw, "title") || readString(raw, "workflow_type") || id,
+    status: (readString(raw, "status").toUpperCase() as WorkflowStatus) || "PENDING",
+    currentStep: readString(raw, "current_step") || undefined,
+    sourceIds: [],
+    artifactIds: [],
+    updatedAt: readString(raw, "updated_at", "created_at"),
+    steps: readArray(raw, "steps").map((step) => ({
+      key: readString(step, "step_key", "key"),
+      label: readString(step, "step_key", "key"),
+      status: (readString(step, "status").toUpperCase() as WorkflowStatus) || "PENDING",
+      inputSummary: "",
+      outputSummary: readString(asRecord(step.output_payload), "summary"),
+      error: readString(step, "error_message") || undefined,
+    })),
+  };
+}
+
+function mapArtifact(raw: Record<string, unknown>): KnowledgeArtifact {
+  return {
+    id: readString(raw, "artifact_id", "id"),
+    artifactType: readString(raw, "artifact_type"),
+    title: readString(raw, "title") || readString(raw, "artifact_id", "id"),
+    validationStatus: readString(raw, "validation_status", "status").toUpperCase() === "INVALID" ? "INVALID" : readString(raw, "validation_status", "status").toUpperCase() === "VALID" ? "VALID" : "PENDING",
+    stalenessStatus: readString(raw, "staleness_status").toUpperCase() === "STALE" ? "STALE" : readString(raw, "staleness_status").toUpperCase() === "CURRENT" ? "CURRENT" : "UNKNOWN",
+    createdAt: readString(raw, "created_at"),
+    sourceIds: [],
+    citationIds: [],
+    staleReasons: [],
+    markdown: readString(raw, "markdown"),
+  };
+}
+
+function mapApproval(raw: Record<string, unknown>): KnowledgeApproval {
+  const preview = asRecord(raw.action_preview);
+  return {
+    id: readString(raw, "approval_request_id", "id"),
+    workflowId: readString(raw, "workflow_run_id"),
+    actionType: readString(raw, "action_type"),
+    payloadSummary: readString(preview, "summary", "target") || "Action preview available",
+    payloadHash: readString(raw, "payload_hash"),
+    requestedBy: "Gateway",
+    riskLevel: (readString(raw, "risk_level").toUpperCase() as RiskLevel) || "LOW",
+    status: (readString(raw, "status").toUpperCase() as ApprovalStatus) || "DRAFT",
+    executionStatus: "PENDING",
+    createdAt: readString(raw, "created_at", "requested_at"),
+    decidedAt: readString(raw, "decided_at") || undefined,
+    audit: ["Loaded from Gateway approval contract."],
+  };
+}
+
+function mapActivity(rows: Record<string, unknown>[]): KnowledgeActivityEvent[] {
+  return rows.map((row) => {
+    const id = readString(row, "job_id", "id");
+    return {
+      id,
+      type: "ingestion",
+      status: readString(row, "status"),
+      title: readString(row, "job_type") || "Knowledge job",
+      createdAt: readString(row, "created_at"),
+      detail: readString(row, "error_message") || readString(row, "error_type") || "Gateway job event",
+    };
+  });
+}
+
+function mapOverviewActivity(overview?: Record<string, unknown>): KnowledgeActivityEvent[] {
+  return readArray(overview, "recent_sources").map((source) => ({
+    id: readString(source, "source_id", "id"),
+    type: "ingestion",
+    status: readString(source, "status"),
+    title: readString(source, "title") || "Knowledge source",
+    linkedHref: `/workspace/knowledge/sources/${readString(source, "source_id", "id")}`,
+    createdAt: readString(source, "updated_at", "created_at"),
+    detail: readString(source, "canonical_uri"),
+  }));
+}
+
+function mapSearchResults(raw: unknown): SearchResult[] {
+  const record = asRecord(raw);
+  const rows = readArray(record, "results").length > 0
+    ? readArray(record, "results")
+    : [...readArray(record, "retrieved_chunks"), ...readArray(record, "evidence_spans"), ...readArray(record, "claims")];
+  return rows.map((row, index) => {
+    const provenance = asRecord(row.provenance);
+    const channel = readString(row, "retrieval_channel");
+    return {
+      id: readString(row, "candidate_id", "id") || `result-${index}`,
+      title: readString(asRecord(row.metadata), "title") || readString(row, "candidate_type") || "Evidence result",
+      snippet: readString(row, "content", "snippet"),
+      sourceId: readString(row, "source_id") || readString(provenance, "source_id"),
+      revisionId: readString(row, "revision_id") || readString(provenance, "revision_id"),
+      citationIds: [],
+      retrievalChannels: channel.includes("graph") ? ["Graph"] : channel.includes("vector") ? ["Vector"] : channel.includes("lexical") ? ["Lexical"] : ["Fused Result"],
+      relatedClaimIds: [],
+      relatedEntityIds: [],
+    };
+  });
 }
 
 function OverviewView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
@@ -413,6 +933,7 @@ function SourcesView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceD
 
 function ImportDialog() {
   const client = useKnowledgeClient();
+  const config = useKnowledgeConfig();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"file" | "url">("file");
   const [sourceUri, setSourceUri] = useState("deerflow://uploads/new-brief.pdf");
@@ -432,10 +953,14 @@ function ImportDialog() {
       const result = await client.createIngestion(payload);
       setAcceptedJob(result.job_id);
       toast.success("Knowledge ingestion accepted");
-    } catch {
-      const result = createDemoImportResult(draft);
-      setAcceptedJob(result.job_id);
-      toast.success("Demo ingestion accepted");
+    } catch (error) {
+      if (config.demoMode) {
+        const result = createDemoImportResult(draft);
+        setAcceptedJob(result.job_id);
+        toast.success("Demo ingestion accepted");
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : "Knowledge ingestion failed");
     } finally {
       setSubmitting(false);
     }
@@ -699,7 +1224,7 @@ function ConflictsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
   );
 }
 
-function WorkflowsView({ dataset }: { dataset: KnowledgeWorkspaceDataset }) {
+function WorkflowsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean }) {
   const [type, setType] = useState<WorkflowType>("decision_memo");
   return (
     <div className="grid gap-4 xl:grid-cols-[340px_1fr]">
@@ -711,7 +1236,7 @@ function WorkflowsView({ dataset }: { dataset: KnowledgeWorkspaceDataset }) {
             <SelectContent>{Object.entries(workflowTypeLabels).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent>
           </Select>
           <Input aria-label="Workflow objective" defaultValue="Prepare rollout decision" />
-          <Button onClick={() => toast.success(`${workflowTypeLabels[type]} accepted in demo`)}><PlayIcon className="size-4" /> Create workflow</Button>
+          <Button disabled={!demoMode} onClick={() => toast.success(`${workflowTypeLabels[type]} accepted in demo`)}><PlayIcon className="size-4" /> Create workflow</Button>
           <p className="text-xs text-muted-foreground">Knowledge-to-Action creates an action draft only. Execution stays behind approval.</p>
         </CardContent>
       </Card>
@@ -759,7 +1284,7 @@ function ArtifactsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
   );
 }
 
-function ApprovalsView({ dataset }: { dataset: KnowledgeWorkspaceDataset }) {
+function ApprovalsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean }) {
   return (
     <div className="grid gap-4">
       <Alert>
@@ -777,8 +1302,8 @@ function ApprovalsView({ dataset }: { dataset: KnowledgeWorkspaceDataset }) {
             <div className="grid gap-2 md:grid-cols-3"><Meta label="Payload hash" value={approval.payloadHash} /><Meta label="Requested by" value={approval.requestedBy} /><Meta label="Created" value={formatKnowledgeDate(approval.createdAt)} /></div>
             <div className="rounded-md border p-3 text-sm">{approval.audit.map((item) => <div key={item}>{item}</div>)}</div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" disabled={approval.status !== "AWAITING_APPROVAL"} onClick={() => toast.success("Demo approval recorded")}>Approve</Button>
-              <Button size="sm" variant="outline" disabled={approval.status !== "AWAITING_APPROVAL"} onClick={() => toast.info("Demo rejection recorded")}>Reject</Button>
+              <Button size="sm" disabled={!demoMode || approval.status !== "AWAITING_APPROVAL"} onClick={() => toast.success("Demo approval recorded")}>Approve</Button>
+              <Button size="sm" variant="outline" disabled={!demoMode || approval.status !== "AWAITING_APPROVAL"} onClick={() => toast.info("Demo rejection recorded")}>Reject</Button>
               <Button size="sm" variant="outline" disabled={approval.status !== "APPROVED" || approval.executionStatus === "SUCCEEDED"}>Execute fake action</Button>
             </div>
           </CardContent>

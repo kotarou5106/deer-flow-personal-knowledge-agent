@@ -72,6 +72,30 @@ export class DemoKnowledgeTransport implements KnowledgeTransport {
     if (request.method === "GET" && request.path === "/activity") {
       return listEnvelope(demoKnowledgeWorkspace.activity, request);
     }
+    if (request.method === "GET" && request.path === "/overview") {
+      return {
+        stats: {
+          sources: demoKnowledgeWorkspace.sources.length,
+          revisions: demoKnowledgeWorkspace.sources.reduce(
+            (count, source) => count + source.revisions.length,
+            0,
+          ),
+          claims: demoKnowledgeWorkspace.claims.length,
+          entities: demoKnowledgeWorkspace.entities.length,
+          relations: demoKnowledgeWorkspace.relations.length,
+          conflicts: demoKnowledgeWorkspace.conflicts.length,
+          workflows: demoKnowledgeWorkspace.workflows.length,
+          artifacts: demoKnowledgeWorkspace.artifacts.length,
+          approvals: demoKnowledgeWorkspace.approvals.length,
+        },
+        recent_sources: demoKnowledgeWorkspace.sources.slice(0, 5),
+        running_jobs: demoKnowledgeWorkspace.jobs.filter((job) => job.status === "RUNNING"),
+        recent_artifacts: demoKnowledgeWorkspace.artifacts.slice(0, 5),
+        pending_approvals: demoKnowledgeWorkspace.approvals.filter(
+          (approval) => approval.status === "AWAITING_APPROVAL",
+        ),
+      };
+    }
     if (request.method === "GET" && request.path === "/sources") {
       return listEnvelope(demoKnowledgeWorkspace.sources, request);
     }
@@ -81,6 +105,17 @@ export class DemoKnowledgeTransport implements KnowledgeTransport {
       const source = demoKnowledgeWorkspace.sources.find((item) => item.id === sourceId);
       if (parts[3] === "revisions") {
         return listEnvelope(source?.revisions ?? [], request);
+      }
+      if (parts[3] === "detail") {
+        return {
+          source: source ?? {},
+          revisions: source?.revisions ?? [],
+          chunks: source?.revisions.flatMap((revision) => revision.chunks) ?? [],
+          claims: demoKnowledgeWorkspace.claims,
+          relations: demoKnowledgeWorkspace.relations,
+          evidence: demoKnowledgeWorkspace.citations,
+          jobs: demoKnowledgeWorkspace.jobs.filter((job) => job.job_id === source?.latestJobId),
+        };
       }
       return source ?? {};
     }
@@ -111,6 +146,9 @@ export class DemoKnowledgeTransport implements KnowledgeTransport {
     }
     if (request.method === "POST" && request.path === "/workflows") {
       return demoKnowledgeWorkspace.workflows[0] ?? {};
+    }
+    if (request.method === "GET" && request.path === "/workflows") {
+      return listEnvelope(demoKnowledgeWorkspace.workflows, request);
     }
     if (request.method === "GET" && request.path.startsWith("/workflows/")) {
       const workflowId = request.path.split("/")[2];

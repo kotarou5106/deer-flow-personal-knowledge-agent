@@ -39,4 +39,62 @@ describe("Knowledge client", () => {
       } as never),
     ).rejects.toThrow("trusted field");
   });
+
+  test("requests production overview through the gateway contract", async () => {
+    const transport = transportReturning({
+      stats: {},
+      recent_sources: [],
+      running_jobs: [],
+      recent_artifacts: [],
+      pending_approvals: [],
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.getOverview()).resolves.toMatchObject({ stats: {} });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "GET", path: "/overview" }),
+    );
+  });
+
+  test("requests source detail through the gateway contract", async () => {
+    const transport = transportReturning({
+      source: { source_id: "source-1" },
+      revisions: [],
+      chunks: [],
+      claims: [],
+      relations: [],
+      evidence: [],
+      jobs: [],
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.getSourceDetail("source-1")).resolves.toMatchObject({
+      source: { source_id: "source-1" },
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        path: "/sources/source-1/detail",
+      }),
+    );
+  });
+
+  test("lists workflows without creating a job", async () => {
+    const transport = transportReturning({
+      data: [],
+      pagination: { limit: 20, offset: 3 },
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.listWorkflows({ limit: 20, offset: 3 })).resolves.toMatchObject({
+      data: [],
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        path: "/workflows",
+        query: { limit: 20, offset: 3 },
+      }),
+    );
+  });
 });

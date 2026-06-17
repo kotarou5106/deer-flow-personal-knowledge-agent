@@ -145,6 +145,9 @@ export type KnowledgeClient = {
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<UnknownListEnvelope>;
+  getOverview: (
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   listSources: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
@@ -158,6 +161,10 @@ export type KnowledgeClient = {
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<UnknownListEnvelope>;
+  getSourceDetail: (
+    sourceId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   getRevision: (
     revisionId: string,
     options?: KnowledgeRequestOptions,
@@ -182,6 +189,10 @@ export type KnowledgeClient = {
     input: WorkflowCreateInput,
     options?: KnowledgeRequestOptions,
   ) => Promise<KnowledgeJobAccepted | Record<string, unknown>>;
+  listWorkflows: (
+    params?: ListParams,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<UnknownListEnvelope>;
   getWorkflow: (
     workflowRunId: string,
     options?: KnowledgeRequestOptions,

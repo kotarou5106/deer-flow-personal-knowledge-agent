@@ -126,6 +126,14 @@ async def cancel_ingestion(job_id: UUID, request: Request, response: Response) -
     return await cancel_job(job_id, request, response)
 
 
+@router.get("/overview")
+async def overview(request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).overview(get_trusted_knowledge_context(request), {})  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.get("/sources")
 async def list_sources(request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     context = get_trusted_knowledge_context(request)
@@ -140,6 +148,14 @@ async def list_sources(request: Request, limit: int = Query(default=50, ge=1, le
 async def get_source(source_id: str, request: Request) -> dict[str, Any]:
     try:
         return await get_knowledge_provider(request).get_source(get_trusted_knowledge_context(request), source_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/sources/{source_id}/detail")
+async def get_source_detail(source_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).get_source_detail(get_trusted_knowledge_context(request), source_id)  # type: ignore[attr-defined]
     except Exception as exc:
         raise _translate_error(exc) from exc
 
@@ -201,6 +217,14 @@ async def create_analysis(body: AnalysisCreateRequest, request: Request, respons
 @router.get("/analyses/{job_id}")
 async def get_analysis(job_id: UUID, request: Request) -> dict[str, Any]:
     return await knowledge_job_status(job_id, request)
+
+
+@router.get("/workflows")
+async def list_workflows(request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).list_workflows(get_trusted_knowledge_context(request), {"limit": _limit(limit), "offset": offset})  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.post("/workflows", status_code=status.HTTP_202_ACCEPTED)

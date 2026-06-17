@@ -122,6 +122,16 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async getOverview(options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: "/overview",
+          ...options,
+        }),
+      );
+    },
     async listSources(params, options) {
       return parseResponse(
         unknownListEnvelopeSchema,
@@ -129,6 +139,16 @@ export function createKnowledgeClient(
           method: "GET",
           path: "/sources",
           query: listQuery(params),
+          ...options,
+        }),
+      );
+    },
+    async getSourceDetail(sourceId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: `/sources/${encodeURIComponent(sourceId)}/detail`,
           ...options,
         }),
       );
@@ -230,6 +250,17 @@ export function createKnowledgeClient(
       });
       const accepted = knowledgeJobAcceptedSchema.safeParse(raw);
       return accepted.success ? accepted.data : parseResponse(unknownRecordSchema, raw);
+    },
+    async listWorkflows(params, options) {
+      return parseResponse(
+        unknownListEnvelopeSchema,
+        await transport.request({
+          method: "GET",
+          path: "/workflows",
+          query: listQuery(params),
+          ...options,
+        }),
+      );
     },
     async getWorkflow(workflowRunId, options) {
       return parseResponse(
