@@ -6,6 +6,8 @@
 #   deploy.sh                    — build + start
 #   deploy.sh build              — build all images (mode-agnostic)
 #   deploy.sh start              — start from pre-built images
+#   deploy.sh restart            — restart long-running services
+#   deploy.sh status             — show long-running service status
 #   deploy.sh down               — stop and remove containers
 #
 # Sandbox mode (local / aio / provisioner) is auto-detected from config.yaml.
@@ -14,6 +16,8 @@
 #   deploy.sh                    # build + start
 #   deploy.sh build              # build all images
 #   deploy.sh start              # start pre-built images
+#   deploy.sh restart            # restart long-running services
+#   deploy.sh status             # show long-running service status
 #   deploy.sh down               # stop and remove containers
 #
 # Must be run from the repo root directory.
@@ -21,11 +25,11 @@
 set -e
 
 case "${1:-}" in
-    build|start|down)
+    build|start|restart|status|down)
         CMD="$1"
         if [ -n "${2:-}" ]; then
             echo "Unknown argument: $2"
-            echo "Usage: deploy.sh [build|start|down]"
+            echo "Usage: deploy.sh [build|start|restart|status|down]"
             exit 1
         fi
         ;;
@@ -34,7 +38,7 @@ case "${1:-}" in
         ;;
     *)
         echo "Unknown argument: $1"
-        echo "Usage: deploy.sh [build|start|down]"
+        echo "Usage: deploy.sh [build|start|restart|status|down]"
         exit 1
         ;;
 esac
@@ -218,6 +222,11 @@ if [ "$CMD" = "down" ]; then
     export DEER_FLOW_REPO_ROOT="${DEER_FLOW_REPO_ROOT:-$REPO_ROOT}"
     export BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-placeholder}"
     export DEER_FLOW_INTERNAL_AUTH_TOKEN="${DEER_FLOW_INTERNAL_AUTH_TOKEN:-placeholder}"
+    export POSTGRES_USER="${POSTGRES_USER:-placeholder}"
+    export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-placeholder}"
+    export POSTGRES_DB="${POSTGRES_DB:-placeholder}"
+    export DATABASE_URL="${DATABASE_URL:-postgresql://placeholder:placeholder@postgres:5432/placeholder}"
+    export KNOWLEDGE_DATABASE_URL="${KNOWLEDGE_DATABASE_URL:-postgresql://placeholder:placeholder@postgres:5432/placeholder}"
     "${COMPOSE_CMD[@]}" down
     exit 0
 fi
@@ -258,10 +267,12 @@ echo -e "${BLUE}Sandbox mode: $sandbox_mode${NC}"
 
 echo -e "${BLUE}Runtime: Gateway embedded agent runtime${NC}"
 
-services="frontend gateway nginx"
+long_services="postgres gateway knowledge-worker frontend nginx"
+build_services="knowledge-migrate gateway knowledge-worker frontend"
 
 if [ "$sandbox_mode" = "provisioner" ]; then
-    services="$services provisioner"
+    long_services="$long_services provisioner"
+    build_services="$build_services provisioner"
 fi
 
 # ── DEER_FLOW_DOCKER_SOCKET (aio / pure-DooD mode only) ──────────────────────
@@ -287,20 +298,41 @@ fi
 
 echo ""
 
+if [ "$CMD" = "status" ]; then
+    # shellcheck disable=SC2086
+    "${COMPOSE_CMD[@]}" ps $long_services
+    exit 0
+fi
+
+if [ "$CMD" = "restart" ]; then
+    # shellcheck disable=SC2086
+    "${COMPOSE_CMD[@]}" restart $long_services
+    exit 0
+fi
+
 # ── Start / Up ───────────────────────────────────────────────────────────────
 
-if [ "$CMD" = "start" ]; then
-    echo "Starting containers (no rebuild)..."
+if [ "$CMD" != "start" ]; then
+    echo "Building images..."
     echo ""
     # shellcheck disable=SC2086
-    "${COMPOSE_CMD[@]}" up -d --remove-orphans $services
-else
-    # Default: build + start
-    echo "Building images and starting containers..."
-    echo ""
-    # shellcheck disable=SC2086
-    "${COMPOSE_CMD[@]}" up --build -d --remove-orphans $services
+    "${COMPOSE_CMD[@]}" build $build_services
 fi
+
+echo "Starting PostgreSQL and waiting for health..."
+echo ""
+"${COMPOSE_CMD[@]}" up -d --wait postgres
+
+echo ""
+echo "Running Knowledge database migrations..."
+echo ""
+"${COMPOSE_CMD[@]}" run --rm knowledge-migrate
+
+echo ""
+echo "Starting long-running services..."
+echo ""
+# shellcheck disable=SC2086
+"${COMPOSE_CMD[@]}" up -d --remove-orphans $long_services
 
 echo ""
 echo "=========================================="

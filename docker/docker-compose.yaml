@@ -9,7 +9,7 @@
 #
 # Key environment variables (set via environment/.env or scripts/deploy.sh):
 #   DEER_FLOW_PROJECT_ROOT           — project root for relative runtime paths
-#   DEER_FLOW_HOME                   — runtime data dir, default .deer-flow under $DEER_FLOW_PROJECT_ROOT (or cwd)
+#   DEER_FLOW_HOME                   — host runtime data dir bind-mounted into containers
 #   DEER_FLOW_CONFIG_PATH            — path to config.yaml
 #   DEER_FLOW_EXTENSIONS_CONFIG_PATH — path to extensions_config.json
 #   DEER_FLOW_SKILLS_PATH            — skills dir, default $DEER_FLOW_PROJECT_ROOT/skills
@@ -23,7 +23,55 @@
 #
 # Access: http://localhost:${PORT:-2026}
 
+x-backend-build: &backend-build
+  context: ../
+  dockerfile: backend/Dockerfile
+  args:
+    APT_MIRROR: ${APT_MIRROR:-}
+    UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.7.20}
+    UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.org/simple}
+    UV_EXTRAS: ${UV_EXTRAS:-postgres}
+
 services:
+  # ── PostgreSQL + pgvector ────────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    container_name: deer-flow-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      - POSTGRES_DB=${POSTGRES_DB:-deerflow}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  # ── One-shot Knowledge Migration ─────────────────────────────────────────────
+  knowledge-migrate:
+    build: *backend-build
+    container_name: deer-flow-knowledge-migrate
+    command: sh -c "cd backend && PYTHONPATH=. uv run alembic -c packages/harness/deerflow/persistence/migrations/alembic.ini upgrade head"
+    working_dir: /app
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set}
+      - KNOWLEDGE_DATABASE_URL=${KNOWLEDGE_DATABASE_URL:?KNOWLEDGE_DATABASE_URL must be set}
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - deer-flow
+    restart: "no"
+
   # ── Reverse Proxy ──────────────────────────────────────────────────────────
   nginx:
     image: nginx:alpine
@@ -53,24 +101,20 @@ services:
         NPM_REGISTRY: ${NPM_REGISTRY:-}
     container_name: deer-flow-frontend
     environment:
-      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}
       - DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=http://gateway:8001
+      - NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false
+      - NEXT_PUBLIC_STATIC_WEBSITE_ONLY=false
     env_file:
-      - ../frontend/.env
+      - path: ../frontend/.env
+        required: false
     networks:
       - deer-flow
     restart: unless-stopped
 
   # ── Gateway API ────────────────────────────────────────────────────────────
   gateway:
-    build:
-      context: ../
-      dockerfile: backend/Dockerfile
-      args:
-        APT_MIRROR: ${APT_MIRROR:-}
-        UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.7.20}
-        UV_INDEX_URL: ${UV_INDEX_URL:-https://pypi.org/simple}
-        UV_EXTRAS: ${UV_EXTRAS:-}
+    build: *backend-build
     container_name: deer-flow-gateway
     # Gateway hosts the agent runtime with in-process RunManager + StreamBridge
     # singletons -- run state lives in this worker's memory. Default to a single
@@ -83,7 +127,7 @@ services:
       - ${DEER_FLOW_CONFIG_PATH}:/app/backend/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/backend/extensions_config.json:ro
       - ../skills:/app/skills:ro
-      - ${DEER_FLOW_HOME}:/app/backend/.deer-flow
+      - ${DEER_FLOW_HOME:?DEER_FLOW_HOME is required}:/app/backend/.deer-flow
       # DooD: the host Docker socket is NOT mounted by default. It is added only
       # for aio (pure-DooD) sandbox mode via the opt-in docker-compose.dood.yaml
       # overlay (appended by scripts/deploy.sh). See backend/docs/CONFIGURATION.md
@@ -104,9 +148,13 @@ services:
       - DEER_FLOW_EXTENSIONS_CONFIG_PATH=/app/backend/extensions_config.json
       - DEER_FLOW_CHANNELS_LANGGRAPH_URL=${DEER_FLOW_CHANNELS_LANGGRAPH_URL:-http://gateway:8001/api}
       - DEER_FLOW_CHANNELS_GATEWAY_URL=${DEER_FLOW_CHANNELS_GATEWAY_URL:-http://gateway:8001}
-      - DEER_FLOW_INTERNAL_AUTH_TOKEN=${DEER_FLOW_INTERNAL_AUTH_TOKEN}
+      - DEER_FLOW_INTERNAL_AUTH_TOKEN=${DEER_FLOW_INTERNAL_AUTH_TOKEN:?DEER_FLOW_INTERNAL_AUTH_TOKEN must be set}
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set}
+      - KNOWLEDGE_DATABASE_URL=${KNOWLEDGE_DATABASE_URL:?KNOWLEDGE_DATABASE_URL must be set}
+      - KNOWLEDGE_WORKER_ENABLED=false
+      - GATEWAY_WORKERS=1
       # DooD path/network translation
-      - DEER_FLOW_HOST_BASE_DIR=${DEER_FLOW_HOME}
+      - DEER_FLOW_HOST_BASE_DIR=${DEER_FLOW_HOME:?DEER_FLOW_HOME is required}
       - DEER_FLOW_HOST_SKILLS_PATH=${DEER_FLOW_REPO_ROOT}/skills
       - DEER_FLOW_SANDBOX_HOST=host.docker.internal
       # Proxy values (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY) are inherited from ../.env via env_file.
@@ -114,9 +162,57 @@ services:
       - NO_PROXY=${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,host.docker.internal
       - no_proxy=${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,provisioner,host.docker.internal
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge-migrate:
+        condition: service_completed_successfully
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  # ── Standalone Knowledge Worker ─────────────────────────────────────────────
+  knowledge-worker:
+    build: *backend-build
+    container_name: deer-flow-knowledge-worker
+    command: sh -c "cd backend && PYTHONPATH=. uv run python -m app.knowledge_worker"
+    volumes:
+      - ${DEER_FLOW_CONFIG_PATH}:/app/backend/config.yaml:ro
+      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/backend/extensions_config.json:ro
+      - ../skills:/app/skills:ro
+      - ${DEER_FLOW_HOME:?DEER_FLOW_HOME is required}:/app/backend/.deer-flow
+    working_dir: /app
+    environment:
+      - CI=true
+      - DEER_FLOW_PROJECT_ROOT=/app
+      - DEER_FLOW_HOME=/app/backend/.deer-flow
+      - DEER_FLOW_CONFIG_PATH=/app/backend/config.yaml
+      - DEER_FLOW_EXTENSIONS_CONFIG_PATH=/app/backend/extensions_config.json
+      - DATABASE_URL=${DATABASE_URL:?DATABASE_URL must be set}
+      - KNOWLEDGE_DATABASE_URL=${KNOWLEDGE_DATABASE_URL:?KNOWLEDGE_DATABASE_URL must be set}
+      - KNOWLEDGE_WORKER_ID=${KNOWLEDGE_WORKER_ID:-}
+      - KNOWLEDGE_WORKER_POLL_INTERVAL_SECONDS=${KNOWLEDGE_WORKER_POLL_INTERVAL_SECONDS:-1.0}
+      - KNOWLEDGE_WORKER_LEASE_TTL_SECONDS=${KNOWLEDGE_WORKER_LEASE_TTL_SECONDS:-30.0}
+      - KNOWLEDGE_WORKER_SHUTDOWN_TIMEOUT_SECONDS=${KNOWLEDGE_WORKER_SHUTDOWN_TIMEOUT_SECONDS:-5.0}
+      - DEER_FLOW_HOST_BASE_DIR=${DEER_FLOW_HOME:?DEER_FLOW_HOME is required}
+      - DEER_FLOW_HOST_SKILLS_PATH=${DEER_FLOW_REPO_ROOT}/skills
+      - DEER_FLOW_SANDBOX_HOST=host.docker.internal
+      - NO_PROXY=${NO_PROXY:-}${NO_PROXY:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,postgres,knowledge-worker,provisioner,host.docker.internal
+      - no_proxy=${no_proxy:-}${no_proxy:+,}localhost,127.0.0.1,::1,gateway,frontend,nginx,postgres,knowledge-worker,provisioner,host.docker.internal
+    env_file:
+      - path: ../.env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge-migrate:
+        condition: service_completed_successfully
     networks:
       - deer-flow
     restart: unless-stopped
@@ -141,7 +237,8 @@ services:
       - NODE_HOST=host.docker.internal
       - K8S_API_SERVER=https://host.docker.internal:26443
     env_file:
-      - ../.env
+      - path: ../.env
+        required: false
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -155,3 +252,6 @@ services:
 networks:
   deer-flow:
     driver: bridge
+
+volumes:
+  postgres-data:
