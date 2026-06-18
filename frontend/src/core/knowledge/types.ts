@@ -93,6 +93,16 @@ export type AnalysisCreateInput = {
   idempotency_key?: string | null;
 };
 
+export type RevisionCompareInput = {
+  old_revision_id: string;
+  new_revision_id: string;
+};
+
+export type KnowledgeUpdateReportInput = {
+  old_revision_id?: string | null;
+  new_revision_id: string;
+};
+
 export type WorkflowCreateInput = {
   workflow_type: string;
   input?: Record<string, unknown>;
@@ -170,12 +180,24 @@ export type KnowledgeClient = {
     revisionId: string,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
+  compareRevisions: (
+    input: RevisionCompareInput,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  generateUpdateReport: (
+    input: KnowledgeUpdateReportInput,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   listClaims: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
   listConflicts: (
     params?: ListParams,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  getConflict: (
+    conflictId: string,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
   search: (
@@ -264,8 +286,6 @@ export type MissingKnowledgeCapability =
 
 export const missingBackendCapabilities: MissingKnowledgeCapability[] = [
   "graph_expansion",
-  "revision_comparison",
-  "knowledge_update_report",
   "workflow_artifact_generation",
   "artifact_validation",
   "provenance_validation",

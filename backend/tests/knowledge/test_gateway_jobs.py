@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.testclient import TestClient
 
-from app.gateway.routers.knowledge import AnalysisCreateRequest, IngestionCreateRequest
+from app.gateway.routers.knowledge import AnalysisCreateRequest, IngestionCreateRequest, KnowledgeUpdateReportRequest, RevisionCompareRequest
 from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker, NonRetryableKnowledgeJobError
 from deerflow.knowledge.jobs.models import KnowledgeJob, KnowledgeJobEvent, KnowledgeJobStatus, KnowledgeJobType
 from deerflow.knowledge.jobs.repository import KnowledgeJobRepository, utc_now
@@ -50,6 +50,24 @@ def test_analysis_schema_rejects_client_trusted_fields() -> None:
         )
 
 
+def test_revision_compare_schema_rejects_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        RevisionCompareRequest(
+            old_revision_id=uuid4(),
+            new_revision_id=uuid4(),
+            workspace_id=str(uuid4()),
+        )
+
+
+def test_update_report_schema_rejects_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        KnowledgeUpdateReportRequest(
+            old_revision_id=uuid4(),
+            new_revision_id=uuid4(),
+            user_id="attacker",
+        )
+
+
 def test_gateway_registers_knowledge_routes() -> None:
     from app.gateway.app import create_app
 
@@ -61,6 +79,9 @@ def test_gateway_registers_knowledge_routes() -> None:
     assert "/api/knowledge/search" in paths
     assert "/api/knowledge/overview" in paths
     assert "/api/knowledge/sources/{source_id}/detail" in paths
+    assert "/api/knowledge/revisions/compare" in paths
+    assert "/api/knowledge/update-reports" in paths
+    assert "/api/knowledge/conflicts/{conflict_group_id}" in paths
     assert "/api/knowledge/workflows" in paths
 
 
@@ -114,6 +135,20 @@ class _FakeGatewayProvider:
 
     async def get_source_detail(self, context, source_id):
         return {"source": {"source_id": str(source_id)}, "revisions": [], "chunks": [], "claims": [], "relations": [], "evidence": [], "jobs": []}
+
+    async def compare_revisions(self, context, payload):
+        assert "workspace_id" not in payload
+        return {"old_revision_id": payload["old_revision_id"], "new_revision_id": payload["new_revision_id"], "changes": []}
+
+    async def generate_update_report(self, context, payload):
+        assert "workspace_id" not in payload
+        return {"status": "succeeded", "new_revision_id": payload["new_revision_id"], "conflict_groups": [], "stale_artifacts": []}
+
+    async def find_conflicts(self, context, payload):
+        return {"data": [], "pagination": {"limit": payload["limit"], "offset": payload["offset"]}}
+
+    async def get_conflict(self, context, conflict_group_id):
+        return {"conflict_group_id": str(conflict_group_id), "classification": "DIRECT_CONTRADICTION", "claims": []}
 
     async def list_workflows(self, context, payload):
         return {"data": [], "pagination": {"limit": payload["limit"], "offset": payload["offset"]}}
@@ -207,6 +242,48 @@ def test_gateway_source_detail_uses_formal_provider_contract(monkeypatch) -> Non
     assert response.status_code == 200
     assert response.json()["source"]["source_id"] == str(source_id)
     assert response.json()["revisions"] == []
+
+
+def test_gateway_revision_compare_uses_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+    old_revision_id = uuid4()
+    new_revision_id = uuid4()
+
+    response = client.post(
+        "/api/knowledge/revisions/compare",
+        json={"old_revision_id": str(old_revision_id), "new_revision_id": str(new_revision_id)},
+        headers=_knowledge_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["old_revision_id"] == str(old_revision_id)
+    assert response.json()["new_revision_id"] == str(new_revision_id)
+
+
+def test_gateway_update_report_uses_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+    new_revision_id = uuid4()
+
+    response = client.post(
+        "/api/knowledge/update-reports",
+        json={"new_revision_id": str(new_revision_id)},
+        headers=_knowledge_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["new_revision_id"] == str(new_revision_id)
+    assert response.json()["conflict_groups"] == []
+
+
+def test_gateway_conflict_detail_uses_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+    conflict_group_id = uuid4()
+
+    response = client.get(f"/api/knowledge/conflicts/{conflict_group_id}", headers=_knowledge_headers())
+
+    assert response.status_code == 200
+    assert response.json()["conflict_group_id"] == str(conflict_group_id)
+    assert response.json()["classification"] == "DIRECT_CONTRADICTION"
 
 
 def test_gateway_workflow_list_paginates(monkeypatch) -> None:

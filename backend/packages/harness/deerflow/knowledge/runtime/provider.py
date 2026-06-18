@@ -6,22 +6,35 @@ from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from deerflow.knowledge.analysis import AnalysisService
 from deerflow.knowledge.analysis.model_client import DeterministicAnalysisModel
 from deerflow.knowledge.config import KnowledgeDatabaseConfig
 from deerflow.knowledge.database import KnowledgeDatabase
-from deerflow.knowledge.enums import ApprovalStatus, RiskLevel
+from deerflow.knowledge.enums import ApprovalStatus, ClaimStatus, JobStatus, RiskLevel
+from deerflow.knowledge.extraction import ExtractionService
+from deerflow.knowledge.extraction.model_client import DeterministicStructuredExtractionModel
+from deerflow.knowledge.extraction.persistence import ExtractionPersistence
+from deerflow.knowledge.extraction.schemas import ChunkText, ModelExtractionRequest
+from deerflow.knowledge.extraction.validator import ExtractionValidator
 from deerflow.knowledge.ingestion.models import SourceInput
 from deerflow.knowledge.ingestion.pipeline import IngestionPipeline
-from deerflow.knowledge.models import ApprovalRequest
+from deerflow.knowledge.models import ApprovalRequest, Chunk, Claim, ConflictGroup, ExtractionRun
 from deerflow.knowledge.retrieval.service import RetrievalService
 from deerflow.knowledge.runtime.context import TrustedKnowledgeContext
-from deerflow.knowledge.unit_of_work import KnowledgeUnitOfWork
+from deerflow.knowledge.unit_of_work import KnowledgeUnitOfWork, SessionFactory
+from deerflow.knowledge.updates import KnowledgeUpdateService, diff_revisions, render_markdown_report
+from deerflow.knowledge.updates.impact_analyzer import build_incremental_processing_plan
+from deerflow.knowledge.updates.schemas import (
+    ChunkChangeType,
+    IncrementalProcessingPlan,
+    RevisionDiff,
+)
 
 
 class KnowledgeServiceUnavailableError(RuntimeError):
@@ -60,6 +73,8 @@ class KnowledgeServiceProvider(Protocol):
     async def compare_revisions(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def find_conflicts(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def get_conflict(self, context: TrustedKnowledgeContext, conflict_group_id: str) -> dict[str, Any]: ...
 
     async def generate_update_report(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -148,6 +163,9 @@ class UnconfiguredKnowledgeServiceProvider:
         self._unavailable()
 
     async def find_conflicts(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        self._unavailable()
+
+    async def get_conflict(self, context: TrustedKnowledgeContext, conflict_group_id: str) -> dict[str, Any]:
         self._unavailable()
 
     async def generate_update_report(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -459,7 +477,11 @@ class DatabaseKnowledgeServiceProvider:
             source = await uow.sources.get_by_id(context.workspace_id, source_uuid)
             if source is None:
                 raise ValueError("Source does not belong to workspace")
-            revisions = await uow.revisions.list_for_source(context.workspace_id, source_uuid)
+            revisions = sorted(
+                await uow.revisions.list_for_source(context.workspace_id, source_uuid),
+                key=lambda revision: revision.revision_number,
+                reverse=True,
+            )
             revision_ids = [revision.id for revision in revisions]
             chunks = []
             evidence = []
@@ -625,28 +647,68 @@ class DatabaseKnowledgeServiceProvider:
         raise KnowledgeServiceUnavailableError("Knowledge graph service is not configured")
 
     async def compare_revisions(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
-        raise KnowledgeServiceUnavailableError("Knowledge update service is not configured")
+        old_revision_id = _uuid(str(payload.get("old_revision_id") or payload.get("base_revision_id")), "old_revision_id")
+        new_revision_id = _uuid(str(payload.get("new_revision_id") or payload.get("target_revision_id")), "new_revision_id")
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            old_revision = await uow.revisions.get_by_id(context.workspace_id, old_revision_id)
+            new_revision = await uow.revisions.get_by_id(context.workspace_id, new_revision_id)
+            if old_revision is None or new_revision is None:
+                raise ValueError("Revision does not belong to workspace")
+            old_chunks = await uow.chunks.list_for_revision(context.workspace_id, old_revision_id)
+            new_chunks = await uow.chunks.list_for_revision(context.workspace_id, new_revision_id)
+            diff = diff_revisions(old_revision, new_revision, old_chunks, new_chunks)
+            plan = build_incremental_processing_plan(diff)
+            chunk_map = {chunk.id: chunk for chunk in [*old_chunks, *new_chunks]}
+            return _revision_diff_payload(diff, plan, chunk_map)
 
     async def find_conflicts(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         limit = min(int(payload.get("limit") or 50), 100)
         offset = max(int(payload.get("offset") or 0), 0)
         async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
             rows = await uow.conflict_groups.list_for_workspace(context.workspace_id, limit=limit, offset=offset)
             return {
                 "data": [
-                    {
-                        "conflict_group_id": str(row.id),
-                        "status": row.status.value,
-                        "summary": row.summary,
-                        "created_at": row.created_at.astimezone(UTC).isoformat(),
-                    }
+                    await _conflict_payload(uow.session, context.workspace_id, row)
                     for row in rows
                 ],
                 "pagination": {"limit": limit, "offset": offset},
             }
 
+    async def get_conflict(self, context: TrustedKnowledgeContext, conflict_group_id: str) -> dict[str, Any]:
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            conflict = await uow.conflict_groups.get_by_id(context.workspace_id, _uuid(conflict_group_id, "conflict_group_id"))
+            if conflict is None:
+                raise ValueError("ConflictGroup does not belong to workspace")
+            return await _conflict_payload(uow.session, context.workspace_id, conflict)
+
     async def generate_update_report(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
-        raise KnowledgeServiceUnavailableError("Knowledge update service is not configured")
+        new_revision_id = _uuid(str(payload.get("new_revision_id") or payload.get("revision_id")), "new_revision_id")
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            new_revision = await uow.revisions.get_by_id(context.workspace_id, new_revision_id)
+            if new_revision is None:
+                raise ValueError("Revision does not belong to workspace")
+            old_revision_id = payload.get("old_revision_id") or payload.get("base_revision_id") or new_revision.previous_revision_id
+            if old_revision_id is None:
+                await _extract_revision_if_needed(self._session_factory, context.workspace_id, new_revision.id)
+                return {
+                    "status": "succeeded",
+                    "source_id": str(new_revision.source_id),
+                    "new_revision_id": str(new_revision.id),
+                    "message": "Initial revision extracted; no previous revision is available for update comparison.",
+                }
+            old_uuid = _uuid(str(old_revision_id), "old_revision_id")
+        await _extract_revision_if_needed(self._session_factory, context.workspace_id, old_uuid)
+        report = await KnowledgeUpdateService(
+            self._session_factory,
+            extraction_processor=_DeterministicChunkProcessor(self._session_factory),
+            indexing_processor=_NoopChunkProcessor(),
+        ).process_revision_update(workspace_id=context.workspace_id, old_revision_id=old_uuid, new_revision_id=new_revision_id)
+        return {
+            **_jsonable(report),
+            "markdown": render_markdown_report(report),
+        }
 
     async def workflow_create(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         raise KnowledgeServiceUnavailableError("Workflow handler services are not configured")
@@ -825,6 +887,281 @@ class DatabaseKnowledgeServiceProvider:
     async def validate_approval(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         approval = await self.approval_get(context, str(payload["approval_request_id"]))
         return {"issues": [] if approval["status"] == ApprovalStatus.APPROVED.value else ["ApprovalRequest is not approved"]}
+
+
+def _revision_diff_payload(diff: RevisionDiff, plan: IncrementalProcessingPlan, chunks_by_id: dict[UUID, Chunk]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for pair in diff.unchanged_pairs:
+        items.append(_paired_change_payload(ChunkChangeType.UNCHANGED, pair.old_chunk_id, pair.new_chunk_id, chunks_by_id))
+    for chunk_id in diff.added_chunk_ids:
+        items.append(_single_change_payload(ChunkChangeType.ADDED, None, chunk_id, chunks_by_id))
+    for chunk_id in diff.removed_chunk_ids:
+        items.append(_single_change_payload(ChunkChangeType.REMOVED, chunk_id, None, chunks_by_id))
+    for pair in diff.modified_pairs:
+        items.append(_paired_change_payload(ChunkChangeType.MODIFIED, pair.old_chunk_id, pair.new_chunk_id, chunks_by_id))
+    for pair in diff.moved_pairs:
+        items.append(_paired_change_payload(ChunkChangeType.MOVED, pair.old_chunk_id, pair.new_chunk_id, chunks_by_id))
+    return {
+        "old_revision_id": str(diff.old_revision_id),
+        "new_revision_id": str(diff.new_revision_id),
+        "summary": _jsonable(diff.summary),
+        "changes": items,
+        "incremental_plan": {
+            "reprocess_chunk_ids": [str(item) for item in plan.reprocess_chunk_ids],
+            "reused_chunk_ids": [str(item) for item in plan.reused_chunk_ids],
+            "removed_chunk_ids": [str(item) for item in plan.removed_chunk_ids],
+        },
+    }
+
+
+def _paired_change_payload(change_type: ChunkChangeType, old_chunk_id: UUID, new_chunk_id: UUID, chunks_by_id: dict[UUID, Chunk]) -> dict[str, Any]:
+    return _single_change_payload(change_type, old_chunk_id, new_chunk_id, chunks_by_id)
+
+
+def _single_change_payload(change_type: ChunkChangeType, old_chunk_id: UUID | None, new_chunk_id: UUID | None, chunks_by_id: dict[UUID, Chunk]) -> dict[str, Any]:
+    old_chunk = chunks_by_id.get(old_chunk_id) if old_chunk_id else None
+    new_chunk = chunks_by_id.get(new_chunk_id) if new_chunk_id else None
+    return {
+        "change_type": change_type.name,
+        "old_chunk_id": str(old_chunk_id) if old_chunk_id else None,
+        "new_chunk_id": str(new_chunk_id) if new_chunk_id else None,
+        "old_chunk": _chunk_payload(old_chunk) if old_chunk else None,
+        "new_chunk": _chunk_payload(new_chunk) if new_chunk else None,
+    }
+
+
+def _chunk_payload(chunk: Chunk) -> dict[str, Any]:
+    return {
+        "chunk_id": str(chunk.id),
+        "revision_id": str(chunk.revision_id),
+        "parent_chunk_id": str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None,
+        "chunk_index": chunk.chunk_index,
+        "token_count": chunk.token_count,
+        "content": chunk.content,
+        "page_number": chunk.page_number,
+        "section_path": _jsonable(chunk.section_path or []),
+        "start_offset": chunk.start_offset,
+        "end_offset": chunk.end_offset,
+    }
+
+
+async def _conflict_payload(session: AsyncSession, workspace_id: UUID, conflict: ConflictGroup) -> dict[str, Any]:
+    from deerflow.knowledge.models import ConflictGroupClaim
+
+    linked_claims = list(
+        (
+            await session.execute(
+                select(Claim)
+                .join(ConflictGroupClaim, (ConflictGroupClaim.claim_id == Claim.id) & (ConflictGroupClaim.workspace_id == Claim.workspace_id))
+                .where(
+                    ConflictGroupClaim.workspace_id == workspace_id,
+                    ConflictGroupClaim.conflict_group_id == conflict.id,
+                )
+                .order_by(Claim.updated_at, Claim.id)
+            )
+        ).scalars()
+    )
+    claim_payloads = [await _claim_payload_with_citations(session, workspace_id, claim) for claim in linked_claims]
+    claim_ids = [claim.id for claim in linked_claims]
+    affected_artifacts = await _affected_artifacts_for_claims(session, workspace_id, claim_ids)
+    metadata = conflict.metadata_json or {}
+    classification = str(metadata.get("classification") or "possible_conflict").upper()
+    basis = str(metadata.get("basis") or conflict.summary or "Claims require review.")
+    active_claim_id = next((payload["claim_id"] for payload in reversed(claim_payloads) if payload["status"] == ClaimStatus.ACTIVE.value), None)
+    citation_ids = sorted({citation["evidence_span_id"] for payload in claim_payloads for citation in payload["citations"]})
+    sources = sorted({citation["source_id"] for payload in claim_payloads for citation in payload["citations"] if citation["source_id"]})
+    return {
+        "conflict_group_id": str(conflict.id),
+        "topic": conflict.topic,
+        "status": conflict.status.value,
+        "classification": classification,
+        "summary": conflict.summary or basis,
+        "basis": basis,
+        "claims": claim_payloads,
+        "claim_ids": [str(claim_id) for claim_id in claim_ids],
+        "source_ids": sources,
+        "citation_ids": citation_ids,
+        "active_claim_id": active_claim_id,
+        "affected_artifacts": affected_artifacts,
+        "affected_artifact_ids": [item["artifact_id"] for item in affected_artifacts],
+        "scope_or_condition": str(metadata.get("scope_or_condition") or basis),
+        "recommended_next_step": _conflict_recommendation(classification),
+        "metadata": _jsonable(metadata),
+        "created_at": conflict.created_at.astimezone(UTC).isoformat(),
+        "updated_at": conflict.updated_at.astimezone(UTC).isoformat(),
+    }
+
+
+async def _claim_payload_with_citations(session: AsyncSession, workspace_id: UUID, claim: Claim) -> dict[str, Any]:
+    from deerflow.knowledge.models import ClaimEvidenceLink, DocumentRevision, EvidenceSpan, Source
+
+    citations = list(
+        (
+            await session.execute(
+                select(EvidenceSpan, Chunk, DocumentRevision, Source)
+                .join(ClaimEvidenceLink, (ClaimEvidenceLink.evidence_span_id == EvidenceSpan.id) & (ClaimEvidenceLink.workspace_id == EvidenceSpan.workspace_id))
+                .join(Chunk, (Chunk.id == EvidenceSpan.chunk_id) & (Chunk.workspace_id == EvidenceSpan.workspace_id))
+                .join(DocumentRevision, (DocumentRevision.id == Chunk.revision_id) & (DocumentRevision.workspace_id == Chunk.workspace_id))
+                .join(Source, (Source.id == DocumentRevision.source_id) & (Source.workspace_id == DocumentRevision.workspace_id))
+                .where(
+                    ClaimEvidenceLink.workspace_id == workspace_id,
+                    ClaimEvidenceLink.claim_id == claim.id,
+                )
+                .order_by(EvidenceSpan.created_at, EvidenceSpan.id)
+            )
+        ).all()
+    )
+    return {
+        "claim_id": str(claim.id),
+        "claim_text": claim.claim_text,
+        "normalized_subject": claim.normalized_subject,
+        "predicate": claim.predicate,
+        "normalized_object": claim.normalized_object,
+        "stance": claim.stance.value,
+        "status": claim.status.value,
+        "confidence": claim.confidence,
+        "valid_from": claim.valid_from.astimezone(UTC).isoformat() if claim.valid_from else None,
+        "valid_to": claim.valid_to.astimezone(UTC).isoformat() if claim.valid_to else None,
+        "metadata": _jsonable(claim.metadata_json or {}),
+        "citations": [_citation_payload(span, chunk, revision, source) for span, chunk, revision, source in citations],
+    }
+
+
+def _citation_payload(span: Any, chunk: Chunk, revision: Any, source: Any) -> dict[str, Any]:
+    return {
+        "evidence_span_id": str(span.id),
+        "citation_id": str(span.id),
+        "chunk_id": str(chunk.id),
+        "revision_id": str(revision.id),
+        "revision_number": revision.revision_number,
+        "source_id": str(source.id),
+        "source_title": source.title,
+        "source_uri": source.canonical_uri,
+        "quoted_text": span.quoted_text,
+        "start_offset": span.start_offset,
+        "end_offset": span.end_offset,
+        "page_number": span.page_number,
+        "section_path": _jsonable(chunk.section_path or []),
+    }
+
+
+async def _affected_artifacts_for_claims(session: AsyncSession, workspace_id: UUID, claim_ids: list[UUID]) -> list[dict[str, Any]]:
+    if not claim_ids:
+        return []
+    from deerflow.knowledge.models import Artifact, ArtifactEvidenceLink
+
+    rows = list(
+        (
+            await session.execute(
+                select(Artifact)
+                .join(ArtifactEvidenceLink, (ArtifactEvidenceLink.artifact_id == Artifact.id) & (ArtifactEvidenceLink.workspace_id == Artifact.workspace_id))
+                .where(
+                    Artifact.workspace_id == workspace_id,
+                    ArtifactEvidenceLink.claim_id.in_(claim_ids),
+                )
+                .distinct()
+                .order_by(Artifact.updated_at.desc(), Artifact.id)
+            )
+        ).scalars()
+    )
+    return [
+        {
+            "artifact_id": str(artifact.id),
+            "artifact_type": artifact.artifact_type,
+            "title": artifact.title,
+            "staleness_status": artifact.staleness_status.value,
+            "stale_reasons": _jsonable((artifact.metadata_json or {}).get("staleness_reasons") or []),
+        }
+        for artifact in rows
+    ]
+
+
+def _conflict_recommendation(classification: str) -> str:
+    if classification == "TEMPORAL_UPDATE":
+        return "Review the newer citation and decide whether it should supersede the previous claim."
+    if classification == "DIRECT_CONTRADICTION":
+        return "Review both cited claims and choose which claim remains active."
+    if classification == "SOURCE_DISAGREEMENT":
+        return "Compare source authority and keep the better-supported claim active."
+    return "Review the cited evidence before using affected claims in artifacts."
+
+
+async def _extract_revision_if_needed(session_factory: SessionFactory, workspace_id: UUID, revision_id: UUID) -> None:
+    result = await ExtractionService(session_factory, model=DeterministicStructuredExtractionModel()).extract_revision(
+        workspace_id=workspace_id,
+        revision_id=revision_id,
+    )
+    if result.status != JobStatus.SUCCEEDED:
+        raise RuntimeError("Deterministic extraction failed for revision")
+
+
+class _DeterministicChunkProcessor:
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+        self._model = DeterministicStructuredExtractionModel()
+        self._validator = ExtractionValidator()
+        self._persistence = ExtractionPersistence()
+
+    async def process_chunk(self, *, workspace_id: UUID, revision_id: UUID, chunk_id: UUID) -> None:
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            chunk = await uow.chunks.get_by_id(workspace_id, chunk_id)
+            if chunk is None or chunk.revision_id != revision_id:
+                raise ValueError("Chunk does not belong to revision")
+            run = ExtractionRun(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                revision_id=revision_id,
+                model_name=self._model.model_identity,
+                prompt_version="incremental",
+                status=JobStatus.RUNNING,
+                metadata_json={"model_identity": self._model.model_identity, "scope": "incremental_chunk"},
+            )
+            uow.session.add(run)
+            await uow.session.flush()
+            output = await self._model.extract(
+                ModelExtractionRequest(
+                    workspace_id=workspace_id,
+                    revision_id=revision_id,
+                    chunk_id=chunk.id,
+                    chunk_text=chunk.content,
+                    page_number=chunk.page_number,
+                    section_path=[str(part) for part in (chunk.section_path or [])],
+                )
+            )
+            chunk_text = ChunkText(
+                id=chunk.id,
+                revision_id=chunk.revision_id,
+                workspace_id=chunk.workspace_id,
+                content=chunk.content,
+                page_number=chunk.page_number,
+                section_path=[str(part) for part in (chunk.section_path or [])],
+            )
+            validated = self._validator.validate(output, [chunk_text], workspace_id)
+            counts = await self._persistence.persist_chunk_output(
+                uow.session,
+                workspace_id=workspace_id,
+                extraction_run_id=run.id,
+                output=validated.output,
+                chunks_by_id={chunk.id: chunk},
+            )
+            run.status = JobStatus.SUCCEEDED
+            run.completed_at = datetime.now(UTC)
+            run.metadata_json = {
+                **(run.metadata_json or {}),
+                "processed_chunk_count": 1,
+                "entity_count": counts.entity_count,
+                "claim_count": counts.claim_count,
+                "relation_count": counts.relation_count,
+                "rejected_item_count": validated.rejected_item_count,
+                "warnings": [issue.message for issue in validated.issues],
+            }
+            await uow.commit()
+
+
+class _NoopChunkProcessor:
+    async def process_chunk(self, *, workspace_id: UUID, revision_id: UUID, chunk_id: UUID) -> None:
+        return None
 
 
 def _approval_payload(request: ApprovalRequest) -> dict[str, Any]:

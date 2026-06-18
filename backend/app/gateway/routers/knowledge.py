@@ -46,6 +46,16 @@ class AnalysisCreateRequest(StrictModel):
     idempotency_key: str | None = Field(default=None, max_length=256)
 
 
+class RevisionCompareRequest(StrictModel):
+    old_revision_id: UUID
+    new_revision_id: UUID
+
+
+class KnowledgeUpdateReportRequest(StrictModel):
+    old_revision_id: UUID | None = None
+    new_revision_id: UUID
+
+
 class WorkflowCreateRequest(StrictModel):
     workflow_type: str = Field(min_length=1, max_length=128)
     input: dict[str, Any] = Field(default_factory=dict)
@@ -73,6 +83,17 @@ def _translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KnowledgeServiceUnavailableError):
         return _error(503, "service_not_configured", str(exc))
     if isinstance(exc, ValueError):
+        return _error(404, "not_found", "Knowledge resource was not found")
+    return _error(500, "job_failed", "Knowledge service failed")
+
+
+def _translate_compare_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KnowledgeServiceUnavailableError):
+        return _error(503, "service_not_configured", str(exc))
+    if isinstance(exc, ValueError):
+        lowered = str(exc).casefold()
+        if "different sources" in lowered or "distinct" in lowered or "across workspaces" in lowered:
+            return _error(409, "invalid_revision_pair", "Revision pair cannot be compared")
         return _error(404, "not_found", "Knowledge resource was not found")
     return _error(500, "job_failed", "Knowledge service failed")
 
@@ -170,6 +191,44 @@ async def list_source_revisions(source_id: str, request: Request, limit: int = Q
         raise _translate_error(exc) from exc
 
 
+@router.get("/revisions/compare")
+async def compare_revisions_get(old_revision_id: UUID, new_revision_id: UUID, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).compare_revisions(
+            get_trusted_knowledge_context(request),
+            {"old_revision_id": str(old_revision_id), "new_revision_id": str(new_revision_id)},
+        )
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
+@router.post("/revisions/compare")
+async def compare_revisions_post(body: RevisionCompareRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).compare_revisions(get_trusted_knowledge_context(request), body.model_dump(mode="json"))
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
+@router.get("/update-reports")
+async def get_update_report(new_revision_id: UUID, request: Request, old_revision_id: UUID | None = None) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).generate_update_report(
+            get_trusted_knowledge_context(request),
+            {"old_revision_id": str(old_revision_id) if old_revision_id else None, "new_revision_id": str(new_revision_id)},
+        )
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
+@router.post("/update-reports")
+async def create_update_report(body: KnowledgeUpdateReportRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).generate_update_report(get_trusted_knowledge_context(request), body.model_dump(mode="json"))
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
 @router.get("/revisions/{revision_id}")
 async def get_revision(revision_id: str, request: Request) -> dict[str, Any]:
     try:
@@ -190,6 +249,14 @@ async def get_claims(request: Request, limit: int = Query(default=50, ge=1, le=M
 async def get_conflicts(request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     try:
         return await get_knowledge_provider(request).find_conflicts(get_trusted_knowledge_context(request), {"limit": _limit(limit), "offset": offset})
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/conflicts/{conflict_group_id}")
+async def get_conflict(conflict_group_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).get_conflict(get_trusted_knowledge_context(request), conflict_group_id)
     except Exception as exc:
         raise _translate_error(exc) from exc
 

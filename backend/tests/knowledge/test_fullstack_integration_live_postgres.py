@@ -13,7 +13,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 
-from deerflow.knowledge.models import Chunk, DocumentRevision, Source, SourceSnapshot
+from deerflow.knowledge.enums import ArtifactStalenessStatus, ArtifactValidationStatus
+from deerflow.knowledge.models import Artifact, ArtifactEvidenceLink, Chunk, Claim, ClaimEvidenceLink, DocumentRevision, EvidenceSpan, Source, SourceSnapshot
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL"),
@@ -127,6 +128,46 @@ async def _chunk_by_id(app, chunk_id: str) -> Chunk:
         chunk = await session.get(Chunk, chunk_id)
         assert chunk is not None
         return chunk
+
+
+async def _claim_for_revision_text(app, revision_id: str, text_fragment: str) -> Claim:
+    async with app.state.knowledge_provider.database.session_factory() as session:
+        claim = (
+            await session.execute(
+                select(Claim)
+                .join(ClaimEvidenceLink, ClaimEvidenceLink.claim_id == Claim.id)
+                .join(EvidenceSpan, EvidenceSpan.id == ClaimEvidenceLink.evidence_span_id)
+                .join(Chunk, Chunk.id == EvidenceSpan.chunk_id)
+                .where(Chunk.revision_id == revision_id, Claim.claim_text.contains(text_fragment))
+            )
+        ).scalars().first()
+        assert claim is not None
+        return claim
+
+
+async def _create_artifact_for_claim(app, claim: Claim) -> str:
+    async with app.state.knowledge_provider.database.session_factory() as session:
+        artifact = Artifact(
+            workspace_id=claim.workspace_id,
+            artifact_type="knowledge_update_review",
+            title="Project update brief",
+            storage_path="/tmp/project-update.md",
+            validation_status=ArtifactValidationStatus.VALID,
+            staleness_status=ArtifactStalenessStatus.FRESH,
+            metadata_json={"markdown": "# Project update brief"},
+        )
+        session.add(artifact)
+        await session.flush()
+        session.add(
+            ArtifactEvidenceLink(
+                workspace_id=claim.workspace_id,
+                artifact_id=artifact.id,
+                claim_id=claim.id,
+                usage_type="supports",
+            )
+        )
+        await session.commit()
+        return str(artifact.id)
 
 
 async def _read_sse_until_terminal(client: httpx.AsyncClient, job_id: str, *, user_id: str = "owner-a") -> list[tuple[int, str]]:
@@ -338,6 +379,158 @@ async def test_url_ingestion_ssrf_rejection_and_sse_reconnect(fullstack_gateway_
                 assert search.status_code == 200
                 assert search.json()["retrieved_chunks"]
                 break
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_revision_update_conflict_report_and_stale_artifact_fullstack(fullstack_gateway_config, migrated_knowledge_db) -> None:
+    from app.gateway.app import create_app
+    from deerflow.config.paths import get_paths
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        owner_id = "revision-owner"
+        paths = get_paths()
+        paths.ensure_thread_dirs(owner_id, user_id=owner_id)
+        upload_dir = paths.sandbox_uploads_dir(owner_id, user_id=owner_id)
+        source_path = upload_dir / "project-status.txt"
+        second_source_path = upload_dir / "external-status.txt"
+
+        client = _client(app)
+        try:
+            source_path.write_text("Project deadline is June 20. Project model is v1.", encoding="utf-8")
+            v1 = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/project-status.txt",
+                media_type="text/plain",
+                idempotency_key="project-status-v1",
+                user_id=owner_id,
+            )
+            initial_report = await client.post(
+                "/api/knowledge/update-reports",
+                json={"new_revision_id": v1["result_reference"]["revision_id"]},
+                headers=_headers(owner_id),
+            )
+            assert initial_report.status_code == 200
+            assert "no previous revision" in initial_report.json()["message"].lower()
+
+            old_deadline = await _claim_for_revision_text(app, v1["result_reference"]["revision_id"], "Project deadline")
+            artifact_id = await _create_artifact_for_claim(app, old_deadline)
+
+            source_path.write_text("Project deadline is June 25. Project model is v2. Project risk is high.", encoding="utf-8")
+            v2 = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/project-status.txt",
+                media_type="text/plain",
+                idempotency_key="project-status-v2",
+                user_id=owner_id,
+            )
+            assert v2["result_reference"]["source_id"] == v1["result_reference"]["source_id"]
+
+            compare = await client.post(
+                "/api/knowledge/revisions/compare",
+                json={
+                    "old_revision_id": v1["result_reference"]["revision_id"],
+                    "new_revision_id": v2["result_reference"]["revision_id"],
+                },
+                headers=_headers(owner_id),
+            )
+            assert compare.status_code == 200
+            compare_body = compare.json()
+            assert compare_body["summary"]["modified"] >= 1
+            assert "MODIFIED" in {item["change_type"] for item in compare_body["changes"]}
+            assert compare_body["incremental_plan"]["reprocess_chunk_ids"]
+
+            report = await client.post(
+                "/api/knowledge/update-reports",
+                json={
+                    "old_revision_id": v1["result_reference"]["revision_id"],
+                    "new_revision_id": v2["result_reference"]["revision_id"],
+                },
+                headers=_headers(owner_id),
+            )
+            assert report.status_code == 200
+            report_body = report.json()
+            assert report_body["status"] == "succeeded"
+            assert report_body["new_claims"]
+            assert report_body["conflict_groups"]
+            assert any(item["artifact_id"] == artifact_id for item in report_body["stale_artifacts"])
+            assert "Knowledge Update Report" in report_body["markdown"]
+            assert "Conflict groups" in report_body["markdown"]
+
+            source_path.write_text("Project deadline is not June 25. Project model is v3.", encoding="utf-8")
+            v3 = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/project-status.txt",
+                media_type="text/plain",
+                idempotency_key="project-status-v3",
+                user_id=owner_id,
+            )
+            direct = await client.post(
+                "/api/knowledge/update-reports",
+                json={
+                    "old_revision_id": v2["result_reference"]["revision_id"],
+                    "new_revision_id": v3["result_reference"]["revision_id"],
+                },
+                headers=_headers(owner_id),
+            )
+            assert direct.status_code == 200
+
+            second_source_path.write_text("Project risk is medium.", encoding="utf-8")
+            other_v1 = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/external-status.txt",
+                media_type="text/plain",
+                idempotency_key="external-status-v1",
+                user_id=owner_id,
+            )
+            await client.post(
+                "/api/knowledge/update-reports",
+                json={"new_revision_id": other_v1["result_reference"]["revision_id"]},
+                headers=_headers(owner_id),
+            )
+            second_source_path.write_text("Project deadline is July 01. Project model is not v3.", encoding="utf-8")
+            other_v2 = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/external-status.txt",
+                media_type="text/plain",
+                idempotency_key="external-status-v2",
+                user_id=owner_id,
+            )
+            disagreement = await client.post(
+                "/api/knowledge/update-reports",
+                json={
+                    "old_revision_id": other_v1["result_reference"]["revision_id"],
+                    "new_revision_id": other_v2["result_reference"]["revision_id"],
+                },
+                headers=_headers(owner_id),
+            )
+            assert disagreement.status_code == 200
+
+            conflicts = await client.get("/api/knowledge/conflicts?limit=100", headers=_headers(owner_id))
+            assert conflicts.status_code == 200
+            conflict_rows = conflicts.json()["data"]
+            classifications = {row["classification"] for row in conflict_rows}
+            assert "TEMPORAL_UPDATE" in classifications
+            assert "DIRECT_CONTRADICTION" in classifications
+            assert "SOURCE_DISAGREEMENT" in classifications
+
+            detail = await client.get(f"/api/knowledge/conflicts/{conflict_rows[0]['conflict_group_id']}", headers=_headers(owner_id))
+            assert detail.status_code == 200
+            detail_body = detail.json()
+            assert detail_body["claims"]
+            assert detail_body["citation_ids"]
+            assert detail_body["recommended_next_step"]
+
+            artifacts = await client.get("/api/knowledge/artifacts", headers=_headers(owner_id))
+            assert artifacts.status_code == 200
+            artifact = next(item for item in artifacts.json()["data"] if item["artifact_id"] == artifact_id)
+            assert artifact["staleness_status"] == "stale"
+
+            isolated = await client.get("/api/knowledge/conflicts", headers=_headers("revision-other-owner"))
+            assert isolated.status_code == 200
+            assert isolated.json()["data"] == []
         finally:
             await client.aclose()
 

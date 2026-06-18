@@ -329,6 +329,18 @@ function ProductionGatewayView({
             ? client.getSourceDetail(sourceId, { signal: controller.signal }).catch(() => undefined)
             : Promise.resolve(undefined),
         ]);
+        const revisions = sourceDetail ? sortRevisionRows(readArray(sourceDetail, "revisions")) : [];
+        const latestRevision = revisions[0];
+        const previousRevision = revisions[1];
+        const revisionDiff = latestRevision && previousRevision
+          ? await client.compareRevisions(
+              {
+                old_revision_id: readString(previousRevision, "revision_id", "id"),
+                new_revision_id: readString(latestRevision, "revision_id", "id"),
+              },
+              { signal: controller.signal },
+            ).catch(() => undefined)
+          : undefined;
         if (!cancelled) {
           setDatasetState({
             loading: false,
@@ -337,6 +349,7 @@ function ProductionGatewayView({
               overview,
               sourcesEnvelope,
               sourceDetail,
+              revisionDiff,
               activityEnvelope,
               claims,
               conflicts,
@@ -572,6 +585,7 @@ function buildProductionDataset(input: {
   overview?: Record<string, unknown>;
   sourcesEnvelope?: { data: Record<string, unknown>[] };
   sourceDetail?: Record<string, unknown>;
+  revisionDiff?: Record<string, unknown>;
   activityEnvelope?: { data: Record<string, unknown>[] };
   claims?: Record<string, unknown>;
   conflicts?: Record<string, unknown>;
@@ -585,7 +599,7 @@ function buildProductionDataset(input: {
 
   const sourceDetail = input.sourceDetail;
   if (sourceDetail) {
-    const detailSource = mapSourceDetail(sourceDetail);
+    const detailSource = mapSourceDetail(sourceDetail, input.revisionDiff);
     dataset.sources = [
       detailSource,
       ...dataset.sources.filter((source) => source.id !== detailSource.id),
@@ -595,7 +609,12 @@ function buildProductionDataset(input: {
   }
 
   dataset.claims = readArray(input.claims, "data").map(mapClaim);
-  dataset.conflicts = readArray(input.conflicts, "data").map(mapConflict);
+  const conflictRows = readArray(input.conflicts, "data");
+  const conflictClaims = conflictRows.flatMap(mapClaimsFromConflict);
+  const conflictCitations = conflictRows.flatMap(mapCitationsFromConflict);
+  dataset.claims = mergeById(dataset.claims, conflictClaims);
+  dataset.citations = mergeById(dataset.citations, conflictCitations, "citationId");
+  dataset.conflicts = conflictRows.map(mapConflict);
   dataset.workflows = (input.workflowsEnvelope?.data ?? []).map(mapWorkflow);
   dataset.artifacts = (input.artifactsEnvelope?.data ?? []).map(mapArtifact);
   dataset.approvals = (input.approvalsEnvelope?.data ?? []).map(mapApproval);
@@ -631,6 +650,23 @@ function readNumber(value: Record<string, unknown>, key: string, fallback = 0): 
 function readStringArray(value: Record<string, unknown>, key: string): string[] {
   const item = value[key];
   return Array.isArray(item) ? item.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : [];
+}
+
+function sortRevisionRows(revisions: Record<string, unknown>[]): Record<string, unknown>[] {
+  return [...revisions].sort((left, right) => readNumber(right, "revision_number") - readNumber(left, "revision_number"));
+}
+
+function mergeById<T extends object>(existing: T[], incoming: T[], key = "id"): T[] {
+  const merged = new Map<string, T>();
+  for (const item of existing) {
+    const id = (item as Record<string, unknown>)[key];
+    if (typeof id === "string" && id) merged.set(id, item);
+  }
+  for (const item of incoming) {
+    const id = (item as Record<string, unknown>)[key];
+    if (typeof id === "string" && id) merged.set(id, item);
+  }
+  return Array.from(merged.values());
 }
 
 function mapSourceType(value: string): KnowledgeSourceType {
@@ -696,10 +732,10 @@ function mapChunk(raw: Record<string, unknown>): KnowledgeChunk {
   };
 }
 
-function mapSourceDetail(raw: Record<string, unknown>): KnowledgeSource {
+function mapSourceDetail(raw: Record<string, unknown>, revisionDiff?: Record<string, unknown>): KnowledgeSource {
   const source = mapSourceSummary(asRecord(raw.source));
   const chunks = readArray(raw, "chunks").map(mapChunk);
-  const revisions = readArray(raw, "revisions").map((revision) => mapRevision(revision, chunks.filter((chunk) => chunk.revisionId === readString(revision, "revision_id", "id"))));
+  const revisions = sortRevisionRows(readArray(raw, "revisions")).map((revision) => mapRevision(revision, chunks.filter((chunk) => chunk.revisionId === readString(revision, "revision_id", "id"))));
   const currentRevision = revisions.at(0);
   return {
     ...source,
@@ -708,7 +744,29 @@ function mapSourceDetail(raw: Record<string, unknown>): KnowledgeSource {
     chunkCount: chunks.length,
     updatedAt: source.updatedAt ?? currentRevision?.createdAt ?? "",
     revisions,
+    diff: revisionDiff ? mapRevisionDiff(revisionDiff) : source.diff,
   };
+}
+
+function mapRevisionDiff(raw: Record<string, unknown>): KnowledgeSource["diff"] {
+  return readArray(raw, "changes").map((change, index) => {
+    const changeType = readString(change, "change_type").toUpperCase();
+    const oldChunk = asRecord(change.old_chunk);
+    const newChunk = asRecord(change.new_chunk);
+    const oldChunkId = readString(change, "old_chunk_id") || readString(oldChunk, "chunk_id", "id");
+    const newChunkId = readString(change, "new_chunk_id") || readString(newChunk, "chunk_id", "id");
+    const summaryParts = [
+      oldChunkId ? `old ${oldChunkId.slice(0, 8)}` : "",
+      newChunkId ? `new ${newChunkId.slice(0, 8)}` : "",
+    ].filter(Boolean);
+    return {
+      id: `${changeType}-${oldChunkId || "none"}-${newChunkId || "none"}-${index}`,
+      changeType: ["UNCHANGED", "ADDED", "REMOVED", "MODIFIED", "MOVED"].includes(changeType) ? changeType as KnowledgeSource["diff"][number]["changeType"] : "MODIFIED",
+      oldChunkId: oldChunkId || undefined,
+      newChunkId: newChunkId || undefined,
+      summary: summaryParts.length > 0 ? summaryParts.join(" -> ") : "Revision chunk changed",
+    };
+  });
 }
 
 function mapEvidenceToCitations(raw: Record<string, unknown>, source: KnowledgeSource): KnowledgeCitation[] {
@@ -756,32 +814,73 @@ function mapDetailJobs(raw: Record<string, unknown>): KnowledgeWorkspaceDataset[
 }
 
 function mapClaim(raw: Record<string, unknown>): KnowledgeClaim {
+  const metadata = asRecord(raw.metadata);
+  const lifecycle = readString(metadata, "lifecycle_status").toUpperCase();
+  const status = lifecycle === "SUPERSEDED"
+    ? "SUPERSEDED"
+    : lifecycle === "PENDING_CONFLICT_REVIEW"
+      ? "PENDING_CONFLICT_REVIEW"
+      : readString(raw, "status").toUpperCase() === "SUPERSEDED"
+        ? "SUPERSEDED"
+        : "CURRENT_ACTIVE";
   return {
     id: readString(raw, "claim_id", "id"),
     text: readString(raw, "claim_text", "text"),
     normalizedSubject: readString(raw, "normalized_subject"),
     predicate: readString(raw, "predicate"),
     normalizedObject: readString(raw, "normalized_object"),
-    stance: readString(raw, "stance").toUpperCase() === "CONTRADICTS" ? "CONTRADICTS" : readString(raw, "stance").toUpperCase() === "SUPPORTS" ? "SUPPORTS" : "NEUTRAL",
+    stance: readString(raw, "stance").toUpperCase() === "OPPOSES" || readString(raw, "stance").toUpperCase() === "CONTRADICTS" ? "CONTRADICTS" : readString(raw, "stance").toUpperCase() === "SUPPORTS" ? "SUPPORTS" : "NEUTRAL",
     confidence: readNumber(raw, "confidence"),
-    status: "CURRENT_ACTIVE",
-    citationIds: [],
+    status,
+    validFrom: readString(raw, "valid_from") || undefined,
+    validTo: readString(raw, "valid_to") || undefined,
+    citationIds: readArray(raw, "citations").map((citation) => readString(citation, "evidence_span_id", "citation_id")).filter(Boolean),
   };
 }
 
 function mapConflict(raw: Record<string, unknown>): KnowledgeConflict {
+  const classification = readString(raw, "classification").toUpperCase();
+  const status = readString(raw, "status").toUpperCase();
   return {
     id: readString(raw, "conflict_group_id", "id"),
-    classification: "POSSIBLE_CONFLICT",
-    status: readString(raw, "status").toUpperCase() === "REVIEWED" ? "REVIEWED" : "UNRESOLVED",
+    classification: ["DIRECT_CONTRADICTION", "TEMPORAL_UPDATE", "SCOPE_OR_CONDITION_DIFFERENCE", "SOURCE_DISAGREEMENT", "POSSIBLE_CONFLICT", "INSUFFICIENT_EVIDENCE"].includes(classification)
+      ? classification as KnowledgeConflict["classification"]
+      : "POSSIBLE_CONFLICT",
+    status: status === "RESOLVED" || status === "DISMISSED" || status === "REVIEWED" ? "REVIEWED" : "UNRESOLVED",
     summary: readString(raw, "summary") || "Conflict requires review",
-    claimIds: [],
-    citationIds: [],
-    scopeOrCondition: "",
-    activeClaimId: "",
-    affectedArtifactIds: [],
-    recommendedNextStep: "Review the affected claims in the Knowledge domain.",
+    claimIds: readStringArray(raw, "claim_ids"),
+    citationIds: readStringArray(raw, "citation_ids"),
+    scopeOrCondition: readString(raw, "scope_or_condition", "basis"),
+    activeClaimId: readString(raw, "active_claim_id"),
+    affectedArtifactIds: readStringArray(raw, "affected_artifact_ids"),
+    recommendedNextStep: readString(raw, "recommended_next_step") || "Review the affected claims in the Knowledge domain.",
     updatedAt: readString(raw, "updated_at", "created_at"),
+  };
+}
+
+function mapClaimsFromConflict(raw: Record<string, unknown>): KnowledgeClaim[] {
+  return readArray(raw, "claims").map(mapClaim);
+}
+
+function mapCitationsFromConflict(raw: Record<string, unknown>): KnowledgeCitation[] {
+  return readArray(raw, "claims").flatMap((claim) => readArray(claim, "citations").map(mapConflictCitation));
+}
+
+function mapConflictCitation(raw: Record<string, unknown>): KnowledgeCitation {
+  return {
+    citationId: readString(raw, "evidence_span_id", "citation_id"),
+    sourceId: readString(raw, "source_id"),
+    revisionId: readString(raw, "revision_id"),
+    chunkId: readString(raw, "chunk_id"),
+    evidenceSpanId: readString(raw, "evidence_span_id", "citation_id"),
+    sourceTitle: readString(raw, "source_title"),
+    sourceUri: readString(raw, "source_uri"),
+    quotedText: readString(raw, "quoted_text"),
+    pageNumber: readNumber(raw, "page_number") || undefined,
+    sectionPath: Array.isArray(raw.section_path) ? raw.section_path.filter((item): item is string => typeof item === "string") : [],
+    startOffset: readNumber(raw, "start_offset"),
+    endOffset: readNumber(raw, "end_offset"),
+    role: "direct",
   };
 }
 
@@ -808,16 +907,21 @@ function mapWorkflow(raw: Record<string, unknown>): KnowledgeWorkflow {
 }
 
 function mapArtifact(raw: Record<string, unknown>): KnowledgeArtifact {
+  const metadata = asRecord(raw.metadata);
+  const staleReasons = readStringArray(raw, "stale_reasons").length > 0
+    ? readStringArray(raw, "stale_reasons")
+    : readStringArray(metadata, "staleness_reasons");
+  const staleStatus = readString(raw, "staleness_status").toUpperCase();
   return {
     id: readString(raw, "artifact_id", "id"),
     artifactType: readString(raw, "artifact_type"),
     title: readString(raw, "title") || readString(raw, "artifact_id", "id"),
     validationStatus: readString(raw, "validation_status", "status").toUpperCase() === "INVALID" ? "INVALID" : readString(raw, "validation_status", "status").toUpperCase() === "VALID" ? "VALID" : "PENDING",
-    stalenessStatus: readString(raw, "staleness_status").toUpperCase() === "STALE" ? "STALE" : readString(raw, "staleness_status").toUpperCase() === "CURRENT" ? "CURRENT" : "UNKNOWN",
+    stalenessStatus: staleStatus === "STALE" ? "STALE" : staleStatus === "CURRENT" || staleStatus === "FRESH" ? "CURRENT" : "UNKNOWN",
     createdAt: readString(raw, "created_at"),
     sourceIds: [],
     citationIds: [],
-    staleReasons: [],
+    staleReasons,
     markdown: readString(raw, "markdown"),
   };
 }
@@ -1586,13 +1690,21 @@ function CitationSheet({ citation, onOpenChange }: { citation: KnowledgeCitation
 
 function ConflictSummary({ conflict, dataset, onOpenCitation, expanded = false }: { conflict: KnowledgeConflict; dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void; expanded?: boolean }) {
   const claims = claimsForConflict(dataset, conflict);
+  const affectedArtifacts = dataset.artifacts.filter((artifact) => conflict.affectedArtifactIds.includes(artifact.id));
   return (
     <Card>
       <CardHeader><CardTitle>{conflict.summary}</CardTitle><CardDescription>{conflict.classification} / {formatKnowledgeDate(conflict.updatedAt)}</CardDescription></CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap gap-2"><StatusBadge value={conflict.status} /><Badge variant="outline">{conflict.scopeOrCondition}</Badge></div>
-        {expanded ? <div className="grid gap-2 md:grid-cols-2">{claims.map((claim) => <div key={claim.id} className="rounded-md border p-3 text-sm"><div className="font-medium">{claim.status}</div><p className="mt-1">{claim.text}</p><CitationRow citationIds={claim.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} /></div>)}</div> : null}
+        {expanded ? <div className="grid gap-2 md:grid-cols-2">{claims.map((claim) => <div key={claim.id} className="rounded-md border p-3 text-sm"><div className="font-medium">{claim.id === conflict.activeClaimId ? "Current active" : claim.status}</div><p className="mt-1">{claim.text}</p><p className="mt-1 text-xs text-muted-foreground">{claim.normalizedSubject} / {claim.predicate} / {claim.normalizedObject}</p><CitationRow citationIds={claim.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} /></div>)}</div> : null}
+        {affectedArtifacts.length > 0 ? (
+          <div className="rounded-md border p-3 text-sm">
+            <div className="font-medium">Affected artifacts</div>
+            <div className="mt-2 flex flex-wrap gap-2">{affectedArtifacts.map((artifact) => <Badge key={artifact.id} variant="outline">{artifact.title}</Badge>)}</div>
+          </div>
+        ) : null}
         <p className="text-sm text-muted-foreground">Recommended next step: {conflict.recommendedNextStep}</p>
+        {expanded ? <Button size="sm" variant="outline" disabled>Resolve conflict</Button> : null}
       </CardContent>
     </Card>
   );

@@ -10,9 +10,11 @@ import {
   type AnalysisCreateInput,
   type ApprovalDecisionInput,
   type IngestionCreateInput,
+  type KnowledgeUpdateReportInput,
   type KnowledgeClient,
   type KnowledgeRequestOptions,
   type ListParams,
+  type RevisionCompareInput,
   type SearchInput,
   type WorkflowCreateInput,
 } from "./types";
@@ -184,6 +186,31 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async compareRevisions(input: RevisionCompareInput, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/revisions/compare",
+          body: input,
+          ...options,
+        }),
+      );
+    },
+    async generateUpdateReport(input: KnowledgeUpdateReportInput, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/update-reports",
+          body: {
+            old_revision_id: input.old_revision_id ?? null,
+            new_revision_id: input.new_revision_id,
+          },
+          ...options,
+        }),
+      );
+    },
     async listClaims(params, options) {
       return parseResponse(
         unknownRecordSchema,
@@ -202,6 +229,16 @@ export function createKnowledgeClient(
           method: "GET",
           path: "/conflicts",
           query: listQuery(params),
+          ...options,
+        }),
+      );
+    },
+    async getConflict(conflictId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: `/conflicts/${encodeURIComponent(conflictId)}`,
           ...options,
         }),
       );
