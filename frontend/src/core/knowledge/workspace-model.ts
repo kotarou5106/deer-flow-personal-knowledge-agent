@@ -13,16 +13,16 @@ import type {
 } from "./workspace-types";
 
 export const knowledgeRoutes = [
-  { href: "/workspace/knowledge", label: "Overview" },
-  { href: "/workspace/knowledge/sources", label: "Sources" },
-  { href: "/workspace/knowledge/search", label: "Search" },
-  { href: "/workspace/knowledge/analysis", label: "Analysis" },
-  { href: "/workspace/knowledge/graph", label: "Graph" },
-  { href: "/workspace/knowledge/conflicts", label: "Conflicts" },
-  { href: "/workspace/knowledge/workflows", label: "Workflows" },
-  { href: "/workspace/knowledge/artifacts", label: "Artifacts" },
-  { href: "/workspace/knowledge/approvals", label: "Approvals" },
-  { href: "/workspace/knowledge/activity", label: "Activity" },
+  { href: "/workspace/knowledge", label: "概览" },
+  { href: "/workspace/knowledge/sources", label: "来源" },
+  { href: "/workspace/knowledge/search", label: "检索" },
+  { href: "/workspace/knowledge/analysis", label: "分析" },
+  { href: "/workspace/knowledge/graph", label: "图谱" },
+  { href: "/workspace/knowledge/conflicts", label: "冲突" },
+  { href: "/workspace/knowledge/workflows", label: "工作流" },
+  { href: "/workspace/knowledge/artifacts", label: "产物" },
+  { href: "/workspace/knowledge/approvals", label: "审批" },
+  { href: "/workspace/knowledge/activity", label: "活动" },
 ] as const;
 
 export const workflowTypeLabels: Record<WorkflowType, string> = {
@@ -34,6 +34,15 @@ export const workflowTypeLabels: Record<WorkflowType, string> = {
   knowledge_update_review: "Knowledge Update Review",
   knowledge_to_action: "Knowledge-to-Action",
 };
+
+export const demoRecommendedPath = [
+  { label: "查看架构方案的新旧版本", href: "/workspace/knowledge/sources/src-atlas-architecture" },
+  { label: "检索当前数据库决策", href: "/workspace/knowledge/search" },
+  { label: "查看证据化分析", href: "/workspace/knowledge/analysis" },
+  { label: "检查两组知识冲突", href: "/workspace/knowledge/conflicts" },
+  { label: "打开决策备忘录", href: "/workspace/knowledge/artifacts" },
+  { label: "查看待审批行动", href: "/workspace/knowledge/approvals" },
+] as const;
 
 export function getDemoKnowledgeWorkspace(): KnowledgeWorkspaceDataset {
   return demoKnowledgeWorkspace;
@@ -76,6 +85,19 @@ export function overviewStats(dataset: KnowledgeWorkspaceDataset) {
   };
 }
 
+export function demoOverviewSummary(dataset: KnowledgeWorkspaceDataset) {
+  const versionUpdates = dataset.sources.filter((source) => source.revisions.length > 1).length;
+  const formalArtifacts = dataset.artifacts.filter((artifact) => artifact.artifactType === "Decision Memo").length;
+  const pendingActions = dataset.approvals.filter((approval) => approval.status === "AWAITING_APPROVAL").length;
+  return [
+    { label: "资料来源", value: dataset.sources.length, detail: "全部属于 Project Atlas" },
+    { label: "主要版本更新", value: versionUpdates, detail: "SQLite → PostgreSQL 16 + pgvector" },
+    { label: "知识冲突", value: dataset.conflicts.length, detail: "旧知识更新与行动审批冲突" },
+    { label: "正式产物", value: formalArtifacts, detail: "包含当前与过期 Decision Memo" },
+    { label: "待审批行动", value: pendingActions, detail: "外部通知草稿等待审批" },
+  ];
+}
+
 export function filterSources(
   sources: KnowledgeSource[],
   query: string,
@@ -100,7 +122,11 @@ export function searchKnowledge(dataset: KnowledgeWorkspaceDataset, query: strin
   return dataset.searchResults.filter(
     (result) =>
       result.title.toLowerCase().includes(normalized) ||
-      result.snippet.toLowerCase().includes(normalized),
+      result.snippet.toLowerCase().includes(normalized) ||
+      result.citationIds.some((id) => {
+        const citation = dataset.citations.find((item) => item.citationId === id);
+        return citation?.quotedText.toLowerCase().includes(normalized);
+      }),
   );
 }
 
