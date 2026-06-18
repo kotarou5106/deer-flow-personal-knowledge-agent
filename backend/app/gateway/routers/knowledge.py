@@ -63,9 +63,7 @@ class WorkflowCreateRequest(StrictModel):
 
     @model_validator(mode="after")
     def reject_nested_trusted_identity(self) -> WorkflowCreateRequest:
-        trusted_fields = _TRUSTED_OR_SERVER_MANAGED_FIELDS
-        if trusted_fields & set(self.input):
-            raise ValueError("workflow input cannot include trusted or server-managed fields")
+        _reject_trusted_identity(self.input, path="workflow input")
         return self
 
 

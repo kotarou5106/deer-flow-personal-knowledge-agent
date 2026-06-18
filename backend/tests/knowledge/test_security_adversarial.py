@@ -109,7 +109,7 @@ def test_virtual_file_paths_cannot_escape_user_storage_root(tmp_path: Path) -> N
 
 def test_mass_assignment_rejects_nested_security_sensitive_fields() -> None:
     with pytest.raises(ValidationError):
-        WorkflowCreateRequest(workflow_type="decision_memo", input={"decision": "Ship", "owner_id": "attacker"})
+        WorkflowCreateRequest(workflow_type="decision_memo", input={"decision": "Ship", "metadata": {"owner_id": "attacker"}})
     with pytest.raises(ValidationError):
         ApprovalCreateRequest(workflow_run_id=uuid4(), action_type="TASK_CREATE", action_draft={"payload": {"payload_hash": "forged"}})
     with pytest.raises(ValidationError):
