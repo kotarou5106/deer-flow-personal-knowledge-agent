@@ -214,29 +214,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("LangGraph runtime initialised")
 
         knowledge_provider = None
-        knowledge_worker = None
+        knowledge_runtime = None
         knowledge_database_url = os.environ.get("KNOWLEDGE_DATABASE_URL")
         if knowledge_database_url:
             try:
-                from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker
-                from deerflow.knowledge.jobs.handlers import provider_handlers
-                from deerflow.knowledge.runtime.provider import build_database_knowledge_service_provider, set_knowledge_service_provider
+                from app.knowledge_runtime import build_knowledge_runtime, embedded_worker_enabled, parse_knowledge_worker_settings
 
-                knowledge_provider = build_database_knowledge_service_provider(knowledge_database_url)
-                await knowledge_provider.initialize()
-                set_knowledge_service_provider(knowledge_provider)
+                start_embedded_worker = embedded_worker_enabled(os.environ.get("KNOWLEDGE_WORKER_ENABLED"))
+                knowledge_runtime = await build_knowledge_runtime(
+                    knowledge_database_url,
+                    worker_settings=parse_knowledge_worker_settings() if start_embedded_worker else None,
+                    start_worker=start_embedded_worker,
+                )
+                knowledge_provider = knowledge_runtime.provider
                 app.state.knowledge_provider = knowledge_provider
-                session_factory = knowledge_provider.database.session_factory
-                if session_factory is not None:
-                    app.state.knowledge_job_service = KnowledgeJobService(session_factory)
-                    if os.environ.get("KNOWLEDGE_WORKER_ENABLED", "").lower() in {"1", "true", "yes"}:
-                        knowledge_worker = KnowledgeJobWorker(
-                            session_factory=session_factory,
-                            handlers=provider_handlers(knowledge_provider),
-                            shutdown_timeout_seconds=_SHUTDOWN_HOOK_TIMEOUT_SECONDS,
-                        )
-                        await knowledge_worker.start()
-                        app.state.knowledge_worker = knowledge_worker
+                app.state.knowledge_job_service = knowledge_runtime.job_service
+                if knowledge_runtime.worker is not None:
+                    app.state.knowledge_worker = knowledge_runtime.worker
                 logger.info("Knowledge provider initialised")
             except Exception:
                 logger.exception("Knowledge provider failed to initialize; Gateway will continue without Knowledge API")
@@ -260,23 +254,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         yield
 
-        if knowledge_worker is not None:
+        if knowledge_runtime is not None:
             try:
-                await asyncio.wait_for(knowledge_worker.shutdown(), timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+                await knowledge_runtime.close(timeout_seconds=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
             except TimeoutError:
-                logger.warning("Knowledge worker shutdown exceeded %.1fs", _SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+                logger.warning("Knowledge runtime shutdown exceeded %.1fs", _SHUTDOWN_HOOK_TIMEOUT_SECONDS)
             except Exception:
-                logger.exception("Failed to stop Knowledge worker")
-        if knowledge_provider is not None:
-            try:
-                from deerflow.knowledge.runtime.provider import reset_knowledge_service_provider
-
-                await asyncio.wait_for(knowledge_provider.dispose(), timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
-                reset_knowledge_service_provider()
-            except TimeoutError:
-                logger.warning("Knowledge provider dispose exceeded %.1fs", _SHUTDOWN_HOOK_TIMEOUT_SECONDS)
-            except Exception:
-                logger.exception("Failed to dispose Knowledge provider")
+                logger.exception("Failed to dispose Knowledge runtime")
 
         # Stop channel service on shutdown (bounded to prevent worker hang)
         try:
