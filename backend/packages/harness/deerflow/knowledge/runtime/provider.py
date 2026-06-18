@@ -11,6 +11,8 @@ from uuid import UUID
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
+from deerflow.knowledge.analysis import AnalysisService
+from deerflow.knowledge.analysis.model_client import DeterministicAnalysisModel
 from deerflow.knowledge.config import KnowledgeDatabaseConfig
 from deerflow.knowledge.database import KnowledgeDatabase
 from deerflow.knowledge.enums import ApprovalStatus, RiskLevel
@@ -369,7 +371,20 @@ class DatabaseKnowledgeServiceProvider:
         return _jsonable(result)
 
     async def analyze(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
-        raise KnowledgeServiceUnavailableError("Knowledge analysis service is not configured")
+        context_budget = int(payload.get("context_budget") or 4000)
+        evidence = await RetrievalService(self._session_factory).retrieve(
+            workspace_id=context.workspace_id,
+            query=str(payload["query"]),
+            filters=payload.get("filters") or {},
+            context_budget=context_budget,
+        )
+        result = await AnalysisService(model=DeterministicAnalysisModel()).analyze(
+            workspace_id=context.workspace_id,
+            query=str(payload["query"]),
+            evidence_context_pack=evidence,
+            context_budget=context_budget,
+        )
+        return _jsonable(result.model_dump())
 
     async def get_source(self, context: TrustedKnowledgeContext, source_id: str) -> dict[str, Any]:
         async with KnowledgeUnitOfWork(self._session_factory) as uow:

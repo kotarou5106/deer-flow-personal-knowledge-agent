@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.testclient import TestClient
 
-from app.gateway.routers.knowledge import IngestionCreateRequest
+from app.gateway.routers.knowledge import AnalysisCreateRequest, IngestionCreateRequest
 from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker, NonRetryableKnowledgeJobError
 from deerflow.knowledge.jobs.models import KnowledgeJob, KnowledgeJobEvent, KnowledgeJobStatus, KnowledgeJobType
 from deerflow.knowledge.jobs.repository import KnowledgeJobRepository, utc_now
@@ -34,6 +34,16 @@ def test_ingestion_schema_rejects_client_trusted_fields() -> None:
         IngestionCreateRequest(
             source_type="file",
             source_uri="/mnt/user-data/thread/file.md",
+            workspace_id=str(uuid4()),
+            user_id="attacker",
+            actor_id="attacker",
+        )
+
+
+def test_analysis_schema_rejects_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        AnalysisCreateRequest(
+            query="hello",
             workspace_id=str(uuid4()),
             user_id="attacker",
             actor_id="attacker",
@@ -110,6 +120,24 @@ class _FakeGatewayProvider:
 
     async def action_execute(self, context, approval_request_id):
         raise ValueError("ApprovalRequest is not approved")
+
+    async def analyze(self, context, payload):
+        assert "workspace_id" not in payload
+        assert "_trusted_user_id" not in payload
+        return {"query": payload["query"], "model_identity": "fake-analysis"}
+
+
+def test_gateway_create_analysis_returns_sync_result(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+
+    response = client.post(
+        "/api/knowledge/analyses",
+        json={"query": "hello", "context_budget": 500},
+        headers=_knowledge_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"query": "hello", "model_identity": "fake-analysis"}
 
 
 def test_gateway_create_ingestion_returns_202_and_trusted_urls(monkeypatch) -> None:

@@ -228,20 +228,20 @@ async def test_live_gateway_api_202_csrf_workspace_and_sse_cursor(live_session_f
     client.cookies.set("csrf_token", "csrf-token")
 
     missing_csrf = await client.post(
-        "/api/knowledge/analyses",
-        json={"query": "hello"},
+        "/api/knowledge/ingestions",
+        json={"source_type": "text", "source_uri": "hello"},
         headers={k: v for k, v in _gateway_headers().items() if k != "X-CSRF-Token"},
     )
     assert missing_csrf.status_code == 403
 
     rejected = await client.post(
-        "/api/knowledge/analyses",
-        json={"query": "hello", "workspace_id": str(uuid4())},
+        "/api/knowledge/ingestions",
+        json={"source_type": "text", "source_uri": "hello", "workspace_id": str(uuid4())},
         headers=_gateway_headers(),
     )
     assert rejected.status_code == 422
 
-    response = await client.post("/api/knowledge/analyses", json={"query": "hello"}, headers=_gateway_headers())
+    response = await client.post("/api/knowledge/ingestions", json={"source_type": "text", "source_uri": "hello"}, headers=_gateway_headers())
     assert response.status_code == 202
     body = response.json()
     assert body["job_id"]

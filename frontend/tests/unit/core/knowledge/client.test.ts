@@ -40,6 +40,42 @@ describe("Knowledge client", () => {
     ).rejects.toThrow("trusted field");
   });
 
+  test("creates synchronous analysis requests through the gateway contract", async () => {
+    const transport = transportReturning({
+      query: "What changed?",
+      answer: "Supported by cited evidence.",
+      model_identity: "deterministic-analysis",
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.createAnalysis({ query: "What changed?", context_budget: 5000 })).resolves.toMatchObject({
+      model_identity: "deterministic-analysis",
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/analyses",
+        body: {
+          query: "What changed?",
+          filters: {},
+          context_budget: 5000,
+          idempotency_key: null,
+        },
+      }),
+    );
+  });
+
+  test("rejects trusted identity fields from analysis payloads", async () => {
+    const client = createKnowledgeClient(transportReturning({}));
+
+    await expect(
+      client.createAnalysis({
+        query: "hello",
+        workspace_id: "workspace-1",
+      } as never),
+    ).rejects.toThrow("trusted field");
+  });
+
   test("requests production overview through the gateway contract", async () => {
     const transport = transportReturning({
       stats: {},

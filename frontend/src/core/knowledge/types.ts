@@ -89,6 +89,7 @@ export type SearchInput = {
 export type AnalysisCreateInput = {
   query: string;
   filters?: Record<string, unknown>;
+  context_budget?: number;
   idempotency_key?: string | null;
 };
 
@@ -184,7 +185,7 @@ export type KnowledgeClient = {
   createAnalysis: (
     input: AnalysisCreateInput,
     options?: KnowledgeRequestOptions,
-  ) => Promise<KnowledgeJobAccepted>;
+  ) => Promise<Record<string, unknown>>;
   createWorkflow: (
     input: WorkflowCreateInput,
     options?: KnowledgeRequestOptions,

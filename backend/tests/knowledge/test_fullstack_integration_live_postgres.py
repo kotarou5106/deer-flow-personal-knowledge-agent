@@ -98,6 +98,37 @@ async def _wait_for_status(client: httpx.AsyncClient, job_id: str, expected: set
     raise AssertionError(f"job did not reach {sorted(expected)}; last={last}")
 
 
+async def _ingest_file(
+    client: httpx.AsyncClient,
+    *,
+    source_uri: str,
+    media_type: str,
+    idempotency_key: str,
+    user_id: str = "owner-a",
+) -> dict:
+    accepted = await client.post(
+        "/api/knowledge/ingestions",
+        json={
+            "source_type": "file",
+            "source_uri": source_uri,
+            "media_type": media_type,
+            "idempotency_key": idempotency_key,
+        },
+        headers=_headers(user_id),
+    )
+    assert accepted.status_code == 202
+    terminal = await _wait_for_status(client, accepted.json()["job_id"], {"SUCCEEDED", "FAILED"}, user_id=user_id)
+    assert terminal["status"] == "SUCCEEDED", terminal
+    return terminal
+
+
+async def _chunk_by_id(app, chunk_id: str) -> Chunk:
+    async with app.state.knowledge_provider.database.session_factory() as session:
+        chunk = await session.get(Chunk, chunk_id)
+        assert chunk is not None
+        return chunk
+
+
 async def _read_sse_until_terminal(client: httpx.AsyncClient, job_id: str, *, user_id: str = "owner-a") -> list[tuple[int, str]]:
     events: list[tuple[int, str]] = []
     async with client.stream("GET", f"/api/knowledge/jobs/{job_id}/events", headers=_headers(user_id), timeout=10) as response:
@@ -307,5 +338,99 @@ async def test_url_ingestion_ssrf_rejection_and_sse_reconnect(fullstack_gateway_
                 assert search.status_code == 200
                 assert search.json()["retrieved_chunks"]
                 break
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_analysis_sync_result_citations_and_workspace_isolation(fullstack_gateway_config, migrated_knowledge_db) -> None:
+    from app.gateway.app import create_app
+    from deerflow.config.paths import get_paths
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        owner_id = "analysis-owner"
+        paths = get_paths()
+        paths.ensure_thread_dirs(owner_id, user_id=owner_id)
+        upload_dir = paths.sandbox_uploads_dir(owner_id, user_id=owner_id)
+        analysis_txt = upload_dir / "analysis-evidence.txt"
+        analysis_md = upload_dir / "analysis-inference.md"
+        analysis_txt.write_text(
+            "Orion launch revenue was 42 dollars. Orion launch cost was 30 dollars.",
+            encoding="utf-8",
+        )
+        analysis_md.write_text(
+            "# Orion Notes\n\nThe direct margin evidence is split across revenue and cost notes.",
+            encoding="utf-8",
+        )
+
+        client = _client(app)
+        try:
+            terminal = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/analysis-evidence.txt",
+                media_type="text/plain",
+                idempotency_key="analysis-evidence-once",
+                user_id=owner_id,
+            )
+            await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/analysis-inference.md",
+                media_type="text/markdown",
+                idempotency_key="analysis-inference-once",
+                user_id=owner_id,
+            )
+
+            response = await client.post(
+                "/api/knowledge/analyses",
+                json={
+                    "query": "What does the evidence say about Orion launch revenue, margin, and missing customer count?",
+                    "context_budget": 4000,
+                },
+                headers=_headers(owner_id),
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["model_identity"] == "deterministic-analysis"
+            assert body["query"].startswith("What does the evidence")
+            assert body["supported_facts"], body
+            assert body["inferred_conclusions"], body
+            assert body["unsupported_or_insufficient_claims"] or body["unresolved_questions"], body
+
+            fact = body["supported_facts"][0]
+            assert "Orion launch revenue" in fact["statement"]
+            citation = fact["citations"][0]
+            assert citation["source_id"] == terminal["result_reference"]["source_id"]
+            assert citation["revision_id"]
+            assert citation["chunk_id"]
+            assert citation["direct_evidence"] is True
+            assert citation["is_context_expansion"] is False
+            chunk = await _chunk_by_id(app, citation["chunk_id"])
+            assert chunk.content[citation["start_offset"] : citation["end_offset"]] == citation["quoted_text"]
+
+            inference = body["inferred_conclusions"][0]
+            assert inference["is_inference"] is True
+            assert inference["based_on_citations"]
+            assert "inference" in inference["reasoning_summary"].lower()
+
+            unresolved_text = " ".join(
+                [item["question"] + " " + item["needed_evidence"] for item in body["unresolved_questions"]]
+                + [item["statement"] + " " + item["reason"] for item in body["unsupported_or_insufficient_claims"]]
+            )
+            assert "customer" in unresolved_text.lower() or "missing" in unresolved_text.lower()
+
+            for fact in body["supported_facts"]:
+                assert any(citation["direct_evidence"] and not citation["is_context_expansion"] for citation in fact["citations"])
+
+            isolated = await client.post(
+                "/api/knowledge/analyses",
+                json={"query": "What does the evidence say about Orion launch revenue?", "context_budget": 4000},
+                headers=_headers("analysis-other-owner"),
+            )
+            assert isolated.status_code == 200
+            isolated_body = isolated.json()
+            assert isolated_body["supported_facts"] == []
+            assert isolated_body["inferred_conclusions"] == []
+            assert isolated_body["unsupported_or_insufficient_claims"] or isolated_body["unresolved_questions"]
         finally:
             await client.aclose()

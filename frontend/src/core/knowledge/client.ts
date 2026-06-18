@@ -222,14 +222,16 @@ export function createKnowledgeClient(
       );
     },
     async createAnalysis(input: AnalysisCreateInput, options) {
+      assertNoTrustedFields(input as Record<string, unknown>);
       return parseResponse(
-        knowledgeJobAcceptedSchema,
+        unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: "/analyses",
           body: {
             query: input.query,
             filters: input.filters ?? {},
+            context_budget: input.context_budget ?? 4000,
             idempotency_key: input.idempotency_key ?? null,
           },
           ...options,

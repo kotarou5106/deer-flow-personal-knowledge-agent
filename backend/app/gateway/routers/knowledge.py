@@ -42,6 +42,7 @@ class SearchRequest(StrictModel):
 class AnalysisCreateRequest(StrictModel):
     query: str = Field(min_length=1)
     filters: dict[str, Any] = Field(default_factory=dict)
+    context_budget: int = Field(default=4000, ge=1, le=12000)
     idempotency_key: str | None = Field(default=None, max_length=256)
 
 
@@ -203,15 +204,20 @@ async def search(body: SearchRequest, request: Request) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
-@router.post("/analyses", status_code=status.HTTP_202_ACCEPTED)
-async def create_analysis(body: AnalysisCreateRequest, request: Request, response: Response) -> dict[str, Any]:
-    context = get_trusted_knowledge_context(request)
-    service = get_knowledge_job_service(request)
-    payload = _job_payload(context, body.model_dump(exclude={"idempotency_key"}))
-    job = await service.enqueue(workspace_id=context.workspace_id, job_type=KnowledgeJobType.ANALYZE, payload=payload, idempotency_key=body.idempotency_key)
-    data, code = _accepted(request, job)
-    response.status_code = code
-    return data
+@router.post("/analyses")
+async def create_analysis(body: AnalysisCreateRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await asyncio.wait_for(
+            get_knowledge_provider(request).analyze(
+                get_trusted_knowledge_context(request),
+                body.model_dump(exclude={"idempotency_key"}),
+            ),
+            timeout=30,
+        )
+    except TimeoutError as exc:
+        raise _error(503, "service_not_configured", "Knowledge analysis timed out") from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.get("/analyses/{job_id}")

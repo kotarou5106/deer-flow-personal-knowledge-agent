@@ -61,7 +61,7 @@ import {
   WorkspaceContainer,
   WorkspaceHeader,
 } from "@/components/workspace/workspace-container";
-import { useKnowledgeClient, useKnowledgeConfig } from "@/core/knowledge";
+import { KnowledgeApiError, useKnowledgeClient, useKnowledgeConfig } from "@/core/knowledge";
 import {
   buildDemoImportPayload,
   claimsForConflict,
@@ -367,7 +367,10 @@ function ProductionGatewayView({
   if (view === "search") {
     return <ProductionSearchView onOpenCitation={onOpenCitation} />;
   }
-  if (view === "analysis" || view === "graph") {
+  if (view === "analysis") {
+    return <ProductionAnalysisView onOpenCitation={onOpenCitation} />;
+  }
+  if (view === "graph") {
     return <ProductionUnavailable view={view} />;
   }
 
@@ -439,6 +442,101 @@ function ProductionSearchView({ onOpenCitation }: { onOpenCitation: (citation: K
         </div>
       )}
     </div>
+  );
+}
+
+function ProductionAnalysisView({ onOpenCitation }: { onOpenCitation: (citation: KnowledgeCitation) => void }) {
+  const client = useKnowledgeClient();
+  const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState<string | null>(null);
+  const canFetchKnowledge = typeof window !== "undefined";
+  const analysisQuery = useQuery({
+    queryKey: ["knowledge", "workspace", "analysis", submittedQuery],
+    queryFn: ({ signal }) => client.createAnalysis({ query: submittedQuery ?? "", context_budget: 4000 }, { signal }),
+    enabled: canFetchKnowledge && Boolean(submittedQuery),
+    retry: false,
+  });
+  const dataset = mapAnalysisPayload(analysisQuery.data);
+  const partialMessages = [
+    ...readStringArray(asRecord(analysisQuery.data), "warnings"),
+    ...readArray(analysisQuery.data, "validation_issues").map((issue) => readString(issue, "message")).filter(Boolean),
+  ];
+  const insufficientEvidence =
+    Boolean(submittedQuery) &&
+    !analysisQuery.isLoading &&
+    !analysisQuery.error &&
+    dataset.analysis.supportedFacts.length === 0 &&
+    dataset.analysis.inferredConclusions.length === 0 &&
+    (dataset.analysis.unsupportedClaims.length > 0 || dataset.analysis.unresolvedQuestions.length > 0);
+
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader><CardTitle>Evidence-grounded analysis</CardTitle><CardDescription>Production analysis calls the Gateway endpoint and renders server-validated citations.</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          <Textarea aria-label="Analysis question" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask a question that requires cited evidence" />
+          <Button onClick={() => setSubmittedQuery(query.trim())} disabled={analysisQuery.isLoading || query.trim().length === 0}>
+            {analysisQuery.isLoading ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />}
+            Analyze
+          </Button>
+        </CardContent>
+      </Card>
+      {analysisQuery.error ? (
+        <KnowledgeErrorAlert title="Analysis failed" error={analysisQuery.error} />
+      ) : analysisQuery.isLoading ? (
+        <Skeleton className="h-72" />
+      ) : !submittedQuery ? (
+        <EmptyState title="Enter a question to analyze production knowledge" />
+      ) : (
+        <div className="grid gap-4">
+          {partialMessages.length > 0 ? (
+            <Alert>
+              <CircleAlertIcon className="size-4" />
+              <AlertTitle>Partial result</AlertTitle>
+              <AlertDescription>{partialMessages.join(" ")}</AlertDescription>
+            </Alert>
+          ) : null}
+          {insufficientEvidence ? (
+            <Alert>
+              <CircleAlertIcon className="size-4" />
+              <AlertTitle>Insufficient evidence</AlertTitle>
+              <AlertDescription>The retrieved evidence did not contain direct support for the requested claim.</AlertDescription>
+            </Alert>
+          ) : null}
+          <Card>
+            <CardHeader>
+              <CardTitle>Answer</CardTitle>
+              <CardDescription>{dataset.analysis.sourceIds.length} cited source{dataset.analysis.sourceIds.length === 1 ? "" : "s"}</CardDescription>
+            </CardHeader>
+            <CardContent><p className="text-sm leading-6">{dataset.analysis.answer || "No answer returned."}</p></CardContent>
+          </Card>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <AnalysisSection title="Supported Facts" tone="success" items={dataset.analysis.supportedFacts.map((item) => ({ body: item.statement, meta: `${Math.round(item.confidence * 100)}% confidence`, citationIds: item.citationIds }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+            <AnalysisSection title="Inferred Conclusions" tone="warning" items={dataset.analysis.inferredConclusions.map((item) => ({ body: item.statement, meta: item.reasoningSummary, citationIds: item.citationIds }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+            <AnalysisSection title="Unsupported Claims" tone="danger" items={dataset.analysis.unsupportedClaims.map((item) => ({ body: item.statement, meta: item.reason, citationIds: [] }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+            <AnalysisSection title="Unresolved Questions" tone="neutral" items={dataset.analysis.unresolvedQuestions.map((item) => ({ body: item.question, meta: `${item.whyUnresolved} Needed: ${item.neededEvidence}`, citationIds: [] }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KnowledgeErrorAlert({ title, error }: { title: string; error: unknown }) {
+  const apiError = error instanceof KnowledgeApiError ? error : null;
+  const descriptions: Record<string, string> = {
+    authentication: "Authentication is required before the Knowledge Gateway can run analysis.",
+    authorization: "The current user is not allowed to run this Knowledge request.",
+    csrf: "The request was rejected by CSRF protection.",
+    validation: apiError?.fieldErrors.map((item) => `${item.path.join(".")}: ${item.message}`).join(" ") ?? "The analysis request did not match the Gateway contract.",
+    service_unavailable: "The Knowledge service is unavailable or not configured.",
+  };
+  return (
+    <Alert variant="destructive">
+      <AlertTriangleIcon className="size-4" />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>{apiError ? descriptions[apiError.kind] ?? apiError.message : error instanceof Error ? error.message : "Knowledge request failed."}</AlertDescription>
+    </Alert>
   );
 }
 
@@ -528,6 +626,11 @@ function readString(value: Record<string, unknown>, ...keys: string[]): string {
 function readNumber(value: Record<string, unknown>, key: string, fallback = 0): number {
   const item = value[key];
   return typeof item === "number" && Number.isFinite(item) ? item : fallback;
+}
+
+function readStringArray(value: Record<string, unknown>, key: string): string[] {
+  const item = value[key];
+  return Array.isArray(item) ? item.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : [];
 }
 
 function mapSourceType(value: string): KnowledgeSourceType {
@@ -760,6 +863,58 @@ function mapOverviewActivity(overview?: Record<string, unknown>): KnowledgeActiv
     linkedHref: `/workspace/knowledge/sources/${readString(source, "source_id", "id")}`,
     createdAt: readString(source, "updated_at", "created_at"),
     detail: readString(source, "canonical_uri"),
+  }));
+}
+
+function mapAnalysisPayload(raw: unknown): KnowledgeWorkspaceDataset {
+  const dataset = emptyProductionDataset();
+  const record = asRecord(raw);
+  const citations = mapAnalysisCitations(readArray(record, "evidence_used"));
+  dataset.citations = citations;
+  dataset.analysis = {
+    query: readString(record, "query"),
+    answer: readString(record, "answer"),
+    supportedFacts: readArray(record, "supported_facts").map((fact) => ({
+      statement: readString(fact, "statement"),
+      confidence: readNumber(fact, "confidence"),
+      citationIds: readArray(fact, "citations").map((citation) => readString(citation, "citation_id")).filter(Boolean),
+    })),
+    inferredConclusions: readArray(record, "inferred_conclusions").map((conclusion) => ({
+      statement: readString(conclusion, "statement"),
+      confidence: readNumber(conclusion, "confidence"),
+      reasoningSummary: readString(conclusion, "reasoning_summary"),
+      citationIds: readArray(conclusion, "based_on_citations").map((citation) => readString(citation, "citation_id")).filter(Boolean),
+    })),
+    unsupportedClaims: readArray(record, "unsupported_or_insufficient_claims").map((claim) => ({
+      statement: readString(claim, "statement"),
+      reason: readString(claim, "reason"),
+      severity: readString(claim, "severity"),
+    })),
+    unresolvedQuestions: readArray(record, "unresolved_questions").map((question) => ({
+      question: readString(question, "question"),
+      whyUnresolved: readString(question, "why_unresolved"),
+      neededEvidence: readString(question, "needed_evidence"),
+    })),
+    sourceIds: readArray(record, "source_summary").map((source) => readString(source, "source_id")).filter(Boolean),
+  };
+  return dataset;
+}
+
+function mapAnalysisCitations(rows: Record<string, unknown>[]): KnowledgeCitation[] {
+  return rows.map((citation) => ({
+    citationId: readString(citation, "citation_id"),
+    sourceId: readString(citation, "source_id"),
+    revisionId: readString(citation, "revision_id"),
+    chunkId: readString(citation, "chunk_id"),
+    evidenceSpanId: readString(citation, "evidence_span_id"),
+    sourceTitle: readString(citation, "source_title") || readString(citation, "source_id") || "Knowledge source",
+    sourceUri: readString(citation, "source_uri") || readString(citation, "source_id"),
+    quotedText: readString(citation, "quoted_text"),
+    pageNumber: readNumber(citation, "page_number") || undefined,
+    sectionPath: [],
+    startOffset: readNumber(citation, "start_offset"),
+    endOffset: readNumber(citation, "end_offset"),
+    role: citation.is_context_expansion === true || citation.direct_evidence === false ? "parent_context" : "direct",
   }));
 }
 
