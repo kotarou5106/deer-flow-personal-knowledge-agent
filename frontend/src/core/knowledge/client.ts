@@ -26,17 +26,33 @@ const trustedClientFields = new Set([
   "user_id",
   "thread_id",
   "actor_id",
+  "owner_id",
   "_trusted_user_id",
   "_trusted_actor_id",
   "_trusted_thread_id",
   "_trusted_storage_root",
+  "approval_status",
+  "execution_status",
+  "payload_hash",
 ]);
 
-function assertNoTrustedFields(value: Record<string, unknown>) {
-  for (const key of Object.keys(value)) {
+function assertNoTrustedFields(value: unknown, path = "payload") {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      assertNoTrustedFields(item, `${path}[${index}]`),
+    );
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  for (const [key, item] of Object.entries(value)) {
     if (trustedClientFields.has(key)) {
-      throw new Error(`Client payload cannot include trusted field: ${key}`);
+      throw new Error(
+        `Client payload cannot include trusted field: ${path}.${key}`,
+      );
     }
+    assertNoTrustedFields(item, `${path}.${key}`);
   }
 }
 
@@ -59,7 +75,7 @@ export function createKnowledgeClient(
 ): KnowledgeClient {
   const client: KnowledgeClient = {
     async createIngestion(input: IngestionCreateInput, options) {
-      assertNoTrustedFields(input as Record<string, unknown>);
+      assertNoTrustedFields(input);
       return parseResponse(
         knowledgeJobAcceptedSchema,
         await transport.request({
@@ -261,7 +277,7 @@ export function createKnowledgeClient(
       );
     },
     async createAnalysis(input: AnalysisCreateInput, options) {
-      assertNoTrustedFields(input as Record<string, unknown>);
+      assertNoTrustedFields(input);
       return parseResponse(
         unknownRecordSchema,
         await transport.request({
@@ -453,14 +469,20 @@ export function createKnowledgeClient(
         }),
       );
     },
-    async executeAction(approvalId, input?: ActionExecuteInput, options?: KnowledgeRequestOptions) {
+    async executeAction(
+      approvalId,
+      input?: ActionExecuteInput,
+      options?: KnowledgeRequestOptions,
+    ) {
       if (input?.action_draft) assertNoTrustedFields(input.action_draft);
       return parseResponse(
         unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: `/actions/${encodeURIComponent(approvalId)}/execute`,
-          body: input ? { action_draft: input.action_draft ?? null } : undefined,
+          body: input
+            ? { action_draft: input.action_draft ?? null }
+            : undefined,
           ...options,
         }),
       );

@@ -63,9 +63,9 @@ class WorkflowCreateRequest(StrictModel):
 
     @model_validator(mode="after")
     def reject_nested_trusted_identity(self) -> WorkflowCreateRequest:
-        trusted_fields = {"workspace_id", "user_id", "thread_id", "actor_id", "_trusted_user_id", "_trusted_actor_id", "_trusted_thread_id", "_trusted_storage_root"}
+        trusted_fields = _TRUSTED_OR_SERVER_MANAGED_FIELDS
         if trusted_fields & set(self.input):
-            raise ValueError("workflow input cannot include trusted identity fields")
+            raise ValueError("workflow input cannot include trusted or server-managed fields")
         return self
 
 
@@ -73,12 +73,28 @@ class WorkflowArtifactCreateRequest(StrictModel):
     idempotency_key: str | None = Field(default=None, max_length=256)
 
 
+_TRUSTED_OR_SERVER_MANAGED_FIELDS = {
+    "workspace_id",
+    "user_id",
+    "thread_id",
+    "actor_id",
+    "owner_id",
+    "_trusted_user_id",
+    "_trusted_actor_id",
+    "_trusted_thread_id",
+    "_trusted_storage_root",
+    "approval_status",
+    "execution_status",
+    "payload_hash",
+}
+
+
 def _reject_trusted_identity(value: Any, *, path: str = "payload") -> None:
-    trusted_fields = {"workspace_id", "user_id", "thread_id", "actor_id", "_trusted_user_id", "_trusted_actor_id", "_trusted_thread_id", "_trusted_storage_root"}
+    trusted_fields = _TRUSTED_OR_SERVER_MANAGED_FIELDS
     if isinstance(value, dict):
         forbidden = trusted_fields & set(value)
         if forbidden:
-            raise ValueError(f"{path} cannot include trusted identity fields")
+            raise ValueError(f"{path} cannot include trusted or server-managed fields")
         for key, item in value.items():
             _reject_trusted_identity(item, path=f"{path}.{key}")
     elif isinstance(value, list):

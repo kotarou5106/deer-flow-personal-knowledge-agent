@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -306,6 +307,14 @@ SUPPORTED_ACTION_TYPES = {
     "ARTIFACT_EXPORT",
 }
 
+_SENSITIVE_AUDIT_KEYS = re.compile(r"(?i)(api[_-]?key|authorization|connection[_-]?string|cookie|database[_-]?url|password|secret|token)")
+_SENSITIVE_AUDIT_VALUES = (
+    re.compile(r"(?i)postgres(?:ql)?://[^@\s]+@"),
+    re.compile(r"(?i)\b(?:api[_-]?key|cookie|password|secret|token)\s*[:=]\s*['\"]?[^'\"\s]+"),
+    re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"),
+    re.compile(r"(?i)(traceback \\(most recent call last\\)|\\n\\s*File \"[^\"]+\", line \\d+)"),
+)
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -313,6 +322,28 @@ def _canonical_json(value: Any) -> str:
 
 def _action_payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _safe_audit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return _redact_audit_value(_jsonable(payload))
+
+
+def _redact_audit_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if _SENSITIVE_AUDIT_KEYS.search(str(key)):
+                redacted[str(key)] = "[REDACTED]"
+            else:
+                redacted[str(key)] = _redact_audit_value(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_audit_value(item) for item in value]
+    if isinstance(value, str):
+        if any(pattern.search(value) for pattern in _SENSITIVE_AUDIT_VALUES):
+            return "[REDACTED]"
+        return value
+    return value
 
 
 def _normalize_action_type(value: Any) -> str:
@@ -1072,7 +1103,7 @@ class DatabaseKnowledgeServiceProvider:
                     event_type="approval.requested",
                     target_type="approval_request",
                     target_id=str(request.id),
-                    payload={"action_type": action_type, "payload_hash": payload_hash, "risk_level": request.risk_level.value},
+                    payload=_safe_audit_payload({"action_type": action_type, "payload_hash": payload_hash, "risk_level": request.risk_level.value}),
                 )
             )
             await uow.commit()
@@ -1136,7 +1167,7 @@ class DatabaseKnowledgeServiceProvider:
                     event_type={"approve": "approval.approved", "reject": "approval.rejected", "cancel": "approval.cancelled"}[decision],
                     target_type="approval_request",
                     target_id=str(request.id),
-                    payload={"decision": decision, "reason": payload.get("reason"), "status": request.status.value},
+                    payload=_safe_audit_payload({"decision": decision, "reason": payload.get("reason"), "status": request.status.value}),
                 )
             )
             await uow.commit()
@@ -1175,7 +1206,7 @@ class DatabaseKnowledgeServiceProvider:
                         event_type="action.payload_stale",
                         target_type="approval_request",
                         target_id=str(request.id),
-                        payload={"approved_payload_hash": approved_hash, "current_payload_hash": current_hash},
+                        payload=_safe_audit_payload({"approved_payload_hash": approved_hash, "current_payload_hash": current_hash}),
                     )
                 )
                 await uow.commit()
@@ -1206,12 +1237,14 @@ class DatabaseKnowledgeServiceProvider:
                     event_type="action.executed",
                     target_type="action_execution",
                     target_id=str(execution.id),
-                    payload={
-                        "approval_request_id": str(request.id),
-                        "action_type": request.action_type,
-                        "status": execution.status.value,
-                        "idempotency_key": idempotency_key,
-                    },
+                    payload=_safe_audit_payload(
+                        {
+                            "approval_request_id": str(request.id),
+                            "action_type": request.action_type,
+                            "status": execution.status.value,
+                            "idempotency_key": idempotency_key,
+                        }
+                    ),
                 )
             )
             await uow.commit()
