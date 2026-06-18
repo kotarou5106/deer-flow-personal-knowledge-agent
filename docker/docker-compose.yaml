@@ -99,12 +99,14 @@ services:
       args:
         PNPM_STORE_PATH: ${PNPM_STORE_PATH:-/root/.local/share/pnpm/store}
         NPM_REGISTRY: ${NPM_REGISTRY:-}
+        NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE: ${NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE:-false}
+        NEXT_PUBLIC_STATIC_WEBSITE_ONLY: ${NEXT_PUBLIC_STATIC_WEBSITE_ONLY:-false}
     container_name: deer-flow-frontend
     environment:
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}
       - DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=http://gateway:8001
-      - NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false
-      - NEXT_PUBLIC_STATIC_WEBSITE_ONLY=false
+      - NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=${NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE:-false}
+      - NEXT_PUBLIC_STATIC_WEBSITE_ONLY=${NEXT_PUBLIC_STATIC_WEBSITE_ONLY:-false}
     env_file:
       - path: ../frontend/.env
         required: false
@@ -125,7 +127,12 @@ services:
     command: sh -c "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --workers ${GATEWAY_WORKERS:-1}"
     volumes:
       - ${DEER_FLOW_CONFIG_PATH}:/app/backend/config.yaml:ro
-      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/backend/extensions_config.json:ro
+      - type: bind
+        source: ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}
+        target: /app/backend/extensions_config.json
+        read_only: true
+        bind:
+          create_host_path: false
       - ../skills:/app/skills:ro
       - ${DEER_FLOW_HOME:?DEER_FLOW_HOME is required}:/app/backend/.deer-flow
       # DooD: the host Docker socket is NOT mounted by default. It is added only
@@ -182,7 +189,12 @@ services:
     command: sh -c "cd backend && PYTHONPATH=. uv run python -m app.knowledge_worker"
     volumes:
       - ${DEER_FLOW_CONFIG_PATH}:/app/backend/config.yaml:ro
-      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/backend/extensions_config.json:ro
+      - type: bind
+        source: ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}
+        target: /app/backend/extensions_config.json
+        read_only: true
+        bind:
+          create_host_path: false
       - ../skills:/app/skills:ro
       - ${DEER_FLOW_HOME:?DEER_FLOW_HOME is required}:/app/backend/.deer-flow
     working_dir: /app
