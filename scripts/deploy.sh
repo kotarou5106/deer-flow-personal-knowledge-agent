@@ -9,6 +9,7 @@
 #   deploy.sh restart            — restart long-running services
 #   deploy.sh status             — show long-running service status
 #   deploy.sh down               — stop and remove containers
+#   deploy.sh init-extensions-config — initialise extensions_config.json only
 #
 # Sandbox mode (local / aio / provisioner) is auto-detected from config.yaml.
 #
@@ -25,11 +26,11 @@
 set -e
 
 case "${1:-}" in
-    build|start|restart|status|down)
+    build|start|restart|status|down|init-extensions-config)
         CMD="$1"
         if [ -n "${2:-}" ]; then
             echo "Unknown argument: $2"
-            echo "Usage: deploy.sh [build|start|restart|status|down]"
+            echo "Usage: deploy.sh [build|start|restart|status|down|init-extensions-config]"
             exit 1
         fi
         ;;
@@ -38,7 +39,7 @@ case "${1:-}" in
         ;;
     *)
         echo "Unknown argument: $1"
-        echo "Usage: deploy.sh [build|start|restart|status|down]"
+        echo "Usage: deploy.sh [build|start|restart|status|down|init-extensions-config]"
         exit 1
         ;;
 esac
@@ -56,6 +57,88 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+
+validate_json_file() {
+    local path="$1"
+
+    if command -v python3 > /dev/null 2>&1; then
+        python3 - "$path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    json.load(f)
+PY
+    elif command -v python > /dev/null 2>&1; then
+        python - "$path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    json.load(f)
+PY
+    elif command -v node > /dev/null 2>&1; then
+        node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$path"
+    else
+        echo -e "${RED}✗ Cannot validate JSON: python3, python, and node are unavailable.${NC}" >&2
+        return 1
+    fi
+}
+
+init_extensions_config() {
+    if [ -z "$DEER_FLOW_EXTENSIONS_CONFIG_PATH" ]; then
+        export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$REPO_ROOT/extensions_config.json"
+    fi
+
+    local target="$DEER_FLOW_EXTENSIONS_CONFIG_PATH"
+    local default_template="$REPO_ROOT/docker/extensions_config.default.json"
+    local parent_dir
+    local tmp_file
+
+    if [ -d "$target" ]; then
+        echo -e "${RED}✗ extensions_config.json path is a directory: $target${NC}" >&2
+        echo "  Replace it with a JSON file before starting Docker Compose." >&2
+        return 1
+    fi
+
+    if [ -f "$target" ]; then
+        if ! validate_json_file "$target"; then
+            echo -e "${RED}✗ extensions_config.json is not valid JSON: $target${NC}" >&2
+            echo "  Existing configuration was left unchanged." >&2
+            return 1
+        fi
+        echo -e "${GREEN}✓ extensions_config.json: $target${NC}"
+        return 0
+    fi
+
+    if [ -e "$target" ]; then
+        echo -e "${RED}✗ extensions_config.json path exists but is not a regular file: $target${NC}" >&2
+        return 1
+    fi
+
+    if [ ! -f "$default_template" ]; then
+        echo -e "${RED}✗ Missing default extensions config template: $default_template${NC}" >&2
+        return 1
+    fi
+
+    if ! validate_json_file "$default_template"; then
+        echo -e "${RED}✗ Default extensions config template is not valid JSON: $default_template${NC}" >&2
+        return 1
+    fi
+
+    parent_dir="$(dirname "$target")"
+    mkdir -p "$parent_dir"
+    tmp_file="$parent_dir/.$(basename "$target").tmp.$$"
+    cp "$default_template" "$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "$target"
+    echo -e "${GREEN}✓ Created safe default extensions_config.json at $target${NC}"
+}
+
+if [ "$CMD" = "init-extensions-config" ]; then
+    init_extensions_config
+    exit 0
+fi
 
 # ── DEER_FLOW_HOME ────────────────────────────────────────────────────────────
 
@@ -94,21 +177,8 @@ fi
 
 # ── extensions_config.json ───────────────────────────────────────────────────
 
-if [ -z "$DEER_FLOW_EXTENSIONS_CONFIG_PATH" ]; then
-    export DEER_FLOW_EXTENSIONS_CONFIG_PATH="$REPO_ROOT/extensions_config.json"
-fi
-
-if [ ! -f "$DEER_FLOW_EXTENSIONS_CONFIG_PATH" ]; then
-    if [ -f "$REPO_ROOT/extensions_config.json" ]; then
-        cp "$REPO_ROOT/extensions_config.json" "$DEER_FLOW_EXTENSIONS_CONFIG_PATH"
-        echo -e "${GREEN}✓ Seeded extensions_config.json → $DEER_FLOW_EXTENSIONS_CONFIG_PATH${NC}"
-    else
-        # Create a minimal empty config so the gateway doesn't fail on startup
-        echo '{"mcpServers":{},"skills":{}}' > "$DEER_FLOW_EXTENSIONS_CONFIG_PATH"
-        echo -e "${YELLOW}⚠ extensions_config.json not found, created empty config at $DEER_FLOW_EXTENSIONS_CONFIG_PATH${NC}"
-    fi
-else
-    echo -e "${GREEN}✓ extensions_config.json: $DEER_FLOW_EXTENSIONS_CONFIG_PATH${NC}"
+if [ "$CMD" != "down" ]; then
+    init_extensions_config
 fi
 
 
