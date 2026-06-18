@@ -32,7 +32,7 @@ Coverage:
 - Prompt injection source text remains untrusted evidence.
 - SSRF rejects loopback, private, metadata, userinfo, and private DNS results.
 - `/mnt/user-data/...` virtual paths cannot escape the user storage root.
-- Server-managed fields are rejected in nested mutation payloads.
+- Server-managed fields are rejected in nested mutation payloads, including the final workflow input regression for nested `owner_id`.
 - Knowledge mutations require formal CSRF.
 
 ### Live PostgreSQL Gateway Security Check
@@ -103,6 +103,22 @@ Report scan result:
 
 - `artifacts/personal-knowledge-agent-evaluation.json`: no secret-like or local private path matches.
 - `artifacts/personal-knowledge-agent-evaluation.md`: no secret-like or local private path matches.
+- Frontend production bundle scan: no PostgreSQL connection URL, Knowledge database URL, token/cookie assignment, or secret-like runtime credential matches in the generated bundle. Next's untracked `required-server-files` build metadata contains expected local build paths and is not committed.
+
+## Final Regression Snapshot
+
+- Live Gateway jobs PostgreSQL: `4 passed, 1 warning`.
+- Live Knowledge full-stack PostgreSQL: `6 passed, 1 warning`.
+- Live PostgreSQL security check: `1 passed, 1 warning`.
+- Evaluation/Security focused backend: `7 passed, 1 warning`.
+- Backend Knowledge suite: `120 passed, 16 skipped, 1 warning`.
+- Backend lint: passed.
+- Backend full test: `4563 passed, 32 skipped, 11 warnings`.
+- Frontend unit tests: `339 passed`.
+- Frontend typecheck: passed.
+- Frontend lint: passed.
+- Frontend production build: passed with existing Turbopack NFT trace and localstorage-file warnings.
+- Frontend demo/static build: passed with existing Turbopack NFT trace and localstorage-file warnings.
 
 ## Temporary Resource Cleanup
 

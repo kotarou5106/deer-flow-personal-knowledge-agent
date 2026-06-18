@@ -158,6 +158,8 @@ Actual migration files:
 - Evaluation/Security final frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 --dir frontend build` -> passed with the existing Turbopack NFT trace warning and localstorage-file warnings.
 - Evaluation/Security final backend lint: `make -C backend lint` -> passed.
 - Evaluation/Security final backend full test: `make -C backend test` -> `4563 passed, 32 skipped, 11 warnings`.
+- Final unified adversarial E2E: fresh temporary pgvector PostgreSQL, formal Alembic migration, formal Gateway lifespan, durable worker, trusted context, Next production Knowledge mode, system Microsoft Edge, deterministic providers, and fake action adapters only. The run covered ingestion/job/SSE/source/search/citation/analysis/revision/conflict/workflow/artifact/approval/action/audit surfaces, recursive mass-assignment rejection, workspace isolation, stale approvals, reconciliation persistence, audit redaction, and malicious Knowledge rendering.
+- Final security fix found during unified E2E: workflow creation now rejects nested trusted/server-managed fields recursively inside `WorkflowCreateRequest.input`, including nested `owner_id` and the shared workspace/user/thread/actor/status/hash denylist.
 
 ## 11. Known Boundaries
 
@@ -170,7 +172,7 @@ Actual migration files:
 
 No remaining item is known for the local ingestion/SSE/source-detail/search, analysis, revision/conflict, Workflow/Artifact, Approval/Fake Action, fixture evaluation, threat-model mapping, adversarial security test, live PostgreSQL security, or malicious browser rendering smoke slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL security check, Microsoft Edge malicious rendering smoke, frontend unit/typecheck/lint/build, and the current Evaluation/Security suites passed.
 
-Current fixture evaluation is deterministic and is not a substitute for future real-model quality evaluation against human-labeled gold data. Real Gmail, Calendar, third-party task, external export, and model-backed connector security remain future scope because those connectors are intentionally not integrated.
+Current fixture evaluation is deterministic and is not a substitute for future real-model quality evaluation against human-labeled gold data. Real Gmail, Calendar, third-party task, external export, model-backed connector security, reconciliation resolution workflow, and production monitoring/operations remain future scope because those connectors and deployment surfaces are intentionally not integrated.
 
 ## 13. Current Working Tree State
 
@@ -195,7 +197,7 @@ The stage also hardens Knowledge mass-assignment rejection for server-managed `o
 
 ## 15. Next Stage
 
-E2E/browser hardening against malicious rendered Knowledge content, plus future connector security design. Keep real Gmail, Calendar, third-party task, external export, and model-backed connector dispatch out of scope until that stage explicitly designs and verifies connector security.
+Deployment / Demo / Product Packaging. The next branch should package the already verified local Knowledge experience for deployment and demo use without introducing real Gmail, Calendar, third-party task, external export, or model-backed connector dispatch unless that stage explicitly designs and verifies connector security.
 
 ## 16. Allowed Scope for Next Stage
 
