@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpenIcon, MessageSquarePlus } from "lucide-react";
+import { BookOpenIcon, InfoIcon, MessageSquarePlus } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -12,6 +12,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useI18n } from "@/core/i18n/hooks";
+import { workspaceProjectIntroLink } from "@/core/knowledge/public-demo";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +51,17 @@ export function WorkspaceHeader({ className }: { className?: string }) {
         )}
       </div>
       <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton isActive={pathname === "/knowledge"} asChild>
+            <Link
+              className="text-muted-foreground"
+              href={workspaceProjectIntroLink.href}
+            >
+              <InfoIcon size={16} />
+              <span>{workspaceProjectIntroLink.label}</span>
+            </Link>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton
             isActive={pathname?.startsWith("/workspace/knowledge")}

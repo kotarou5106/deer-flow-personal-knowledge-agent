@@ -66,6 +66,8 @@ import {
   buildDemoImportPayload,
   claimsForConflict,
   createDemoImportResult,
+  demoOverviewSummary,
+  demoRecommendedPath,
   filterSources,
   formatKnowledgeCount,
   formatKnowledgeDate,
@@ -73,7 +75,6 @@ import {
   knowledgeRoutes,
   overviewStats,
   searchKnowledge,
-  sourceTypeDistribution,
   workflowTypeLabels,
 } from "@/core/knowledge/workspace-model";
 import type {
@@ -186,8 +187,20 @@ function renderView({
 }
 
 function titleForView(view: KnowledgeWorkspaceView) {
-  if (view === "source-detail") return "Source Detail";
-  return view[0]!.toUpperCase() + view.slice(1).replace("-", " ");
+  const labels: Record<KnowledgeWorkspaceView, string> = {
+    overview: "Project Atlas 概览",
+    sources: "资料来源",
+    "source-detail": "来源版本详情",
+    search: "证据检索",
+    analysis: "证据化分析",
+    graph: "知识图谱",
+    conflicts: "知识冲突",
+    workflows: "工作流",
+    artifacts: "正式产物",
+    approvals: "审批与行动",
+    activity: "活动时间线",
+  };
+  return labels[view];
 }
 
 function KnowledgeNav({ current, demoMode }: { current: KnowledgeWorkspaceView; demoMode: boolean }) {
@@ -219,15 +232,15 @@ function KnowledgeNav({ current, demoMode }: { current: KnowledgeWorkspaceView; 
 
 function NavIcon({ label }: { label: string }) {
   const className = "size-4";
-  if (label === "Overview") return <BarChart3Icon className={className} aria-hidden="true" />;
-  if (label === "Sources") return <BookOpenIcon className={className} aria-hidden="true" />;
-  if (label === "Search") return <SearchIcon className={className} aria-hidden="true" />;
-  if (label === "Analysis") return <FileTextIcon className={className} aria-hidden="true" />;
-  if (label === "Graph") return <NetworkIcon className={className} aria-hidden="true" />;
-  if (label === "Conflicts") return <GitCompareIcon className={className} aria-hidden="true" />;
-  if (label === "Workflows") return <GitBranchIcon className={className} aria-hidden="true" />;
-  if (label === "Artifacts") return <Layers3Icon className={className} aria-hidden="true" />;
-  if (label === "Approvals") return <ShieldCheckIcon className={className} aria-hidden="true" />;
+  if (label === "概览") return <BarChart3Icon className={className} aria-hidden="true" />;
+  if (label === "来源") return <BookOpenIcon className={className} aria-hidden="true" />;
+  if (label === "检索") return <SearchIcon className={className} aria-hidden="true" />;
+  if (label === "分析") return <FileTextIcon className={className} aria-hidden="true" />;
+  if (label === "图谱") return <NetworkIcon className={className} aria-hidden="true" />;
+  if (label === "冲突") return <GitCompareIcon className={className} aria-hidden="true" />;
+  if (label === "工作流") return <GitBranchIcon className={className} aria-hidden="true" />;
+  if (label === "产物") return <Layers3Icon className={className} aria-hidden="true" />;
+  if (label === "审批") return <ShieldCheckIcon className={className} aria-hidden="true" />;
   return <ActivityIcon className={className} aria-hidden="true" />;
 }
 
@@ -242,7 +255,7 @@ function KnowledgePageHeader({ view, demoMode }: { view: KnowledgeWorkspaceView;
           </Badge>
         </div>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Trace sources into evidence, claims, conflicts, workflows, artifacts, approvals, and action audit.
+          Project Atlas 演示同一组来源如何进入版本、证据、冲突、工作流、正式产物、审批和行动审计。
         </p>
       </div>
       <ServiceStatus demoMode={demoMode} />
@@ -1116,33 +1129,57 @@ function mapRetrievalChannels(channel: string): SearchResult["retrievalChannels"
 
 function OverviewView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
   const stats = overviewStats(dataset);
-  const distribution = sourceTypeDistribution(dataset.sources);
+  const summary = demoOverviewSummary(dataset);
   const latestArtifact = dataset.artifacts[0];
   const latestConflict = dataset.conflicts[0];
+  const staleArtifact = dataset.artifacts.find((artifact) => artifact.stalenessStatus === "STALE");
   return (
     <div className="grid gap-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Sources" value={stats.sources} detail={Object.entries(distribution).map(([type, count]) => `${type}: ${count}`).join(" / ")} />
-        <Stat label="Claims / Entities / Relations" value={`${stats.claims}/${stats.entities}/${stats.relations}`} detail={`${stats.revisions} current and historical revisions`} />
-        <Stat label="Jobs" value={`${stats.activeJobs} active`} detail={`${stats.failedJobs} failed jobs need review`} />
-        <Stat label="Approvals" value={stats.approvals} detail={`${stats.conflicts} unresolved conflicts`} />
+      <Card>
+        <CardHeader>
+          <Badge variant="secondary" className="w-fit rounded-md">Project Atlas</Badge>
+          <CardTitle className="text-2xl">个人知识智能体上线方案</CardTitle>
+          <CardDescription className="max-w-3xl text-sm leading-6">
+            这组演示数据展示同一项目资料如何经历版本更新、冲突检测、证据化分析、正式产物、审批和受控行动。
+          </CardDescription>
+        </CardHeader>
+      </Card>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {summary.map((item) => (
+          <Stat key={item.label} label={item.label} value={item.value} detail={item.detail} />
+        ))}
       </div>
       <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
         <Card>
           <CardHeader>
-            <CardTitle>Recent source and workflow activity</CardTitle>
-            <CardDescription>Evidence-first timeline across ingestion, workflow, artifact, approval, and update events.</CardDescription>
+            <CardTitle>推荐演示路径</CardTitle>
+            <CardDescription>按顺序查看 Project Atlas 的同一条知识生命周期。</CardDescription>
           </CardHeader>
-          <CardContent>
-            <ActivityList events={dataset.activity.slice(0, 5)} />
+          <CardContent className="grid gap-2">
+            {demoRecommendedPath.map((item, index) => (
+              <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded-md border p-3 text-sm transition hover:bg-accent">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary font-medium">{index + 1}</span>
+                <span>{item.label}</span>
+              </Link>
+            ))}
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Decision readiness</CardTitle>
-            <CardDescription>Latest artifact, pending approval, and unresolved conflict.</CardDescription>
+            <CardTitle>近期变化</CardTitle>
+            <CardDescription>Project Atlas 的主要更新和影响。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-md border p-3">
+              <div className="text-sm font-medium">SQLite → PostgreSQL 16 + pgvector</div>
+              <p className="mt-1 text-sm text-muted-foreground">production-architecture.md 当前版本已切换到 PostgreSQL 16 + pgvector。</p>
+            </div>
+            {staleArtifact ? (
+              <div className="rounded-md border p-3">
+                <div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">初版决策备忘录已过期</span><StatusBadge value="STALE" /></div>
+                <p className="mt-1 text-sm text-muted-foreground">{staleArtifact.staleReasons[0]}</p>
+              </div>
+            ) : null}
             {latestArtifact ? <ArtifactSummary artifact={latestArtifact} onOpenCitation={onOpenCitation} dataset={dataset} /> : <EmptyState title="No artifacts yet" />}
             <Separator />
             {latestConflict ? <ConflictSummary conflict={latestConflict} dataset={dataset} onOpenCitation={onOpenCitation} /> : <EmptyState title="No unresolved conflicts" />}
@@ -1151,11 +1188,11 @@ function OverviewView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspace
       </div>
       <Card>
         <CardHeader>
-          <CardTitle>Running work</CardTitle>
-          <CardDescription>Job and workflow progress stays observable from the control center.</CardDescription>
+          <CardTitle>近期活动</CardTitle>
+          <CardDescription>{stats.activeJobs} 个任务仍在推进，{stats.conflicts} 组冲突等待处理。</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2">
-          {dataset.jobs.map((job) => <JobProgressCard key={job.job_id} job={job} events={dataset.jobEvents[job.job_id] ?? []} />)}
+        <CardContent>
+          <ActivityList events={dataset.activity.slice(0, 6)} />
         </CardContent>
       </Card>
     </div>
@@ -1184,38 +1221,38 @@ function SourcesView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceD
       <ImportDialog />
       <Card>
         <CardHeader>
-          <CardTitle>Source library</CardTitle>
-          <CardDescription>Search, filter, and inspect current revision, chunks, claims, and ingestion status.</CardDescription>
+          <CardTitle>Project Atlas 资料来源</CardTitle>
+          <CardDescription>统一展示中文标题、文件名、来源类型、当前 Revision、更新时间和处理状态。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2 md:grid-cols-[1fr_180px_180px]">
-            <Input aria-label="Search sources" placeholder="Search source title or URI" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <Input aria-label="搜索来源" placeholder="搜索中文标题或文件名" value={query} onChange={(event) => setQuery(event.target.value)} />
             <Select value={type} onValueChange={setType}>
               <SelectTrigger aria-label="Filter source type"><SelectValue placeholder="Type" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All types</SelectItem>
+                <SelectItem value="all">全部类型</SelectItem>
                 {["pdf", "markdown", "xlsx", "url"].map((item) => <SelectItem key={item} value={item}>{item.toUpperCase()}</SelectItem>)}
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger aria-label="Filter source status"><SelectValue placeholder="Status" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
+                <SelectItem value="all">全部状态</SelectItem>
                 {["ACTIVE", "INDEXING", "FAILED"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
-          {sources.length === 0 ? <EmptyState title="No sources match these filters" /> : (
+          {sources.length === 0 ? <EmptyState title="没有匹配的来源" /> : (
             <div className="overflow-x-auto rounded-md border">
               <table className="w-full min-w-[840px] text-sm">
                 <thead className="bg-muted/50 text-left text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2 font-medium">Source</th>
-                    <th className="px-3 py-2 font-medium">Type</th>
-                    <th className="px-3 py-2 font-medium">Revision</th>
-                    <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">Claims / Chunks</th>
-                    <th className="px-3 py-2 font-medium">Updated</th>
+                    <th className="px-3 py-2 font-medium">来源</th>
+                    <th className="px-3 py-2 font-medium">类型</th>
+                    <th className="px-3 py-2 font-medium">版本</th>
+                    <th className="px-3 py-2 font-medium">状态</th>
+                    <th className="px-3 py-2 font-medium">主张 / 分块</th>
+                    <th className="px-3 py-2 font-medium">更新时间</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1223,10 +1260,13 @@ function SourcesView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceD
                     <tr key={source.id} className="border-t hover:bg-muted/30">
                       <td className="px-3 py-3">
                         <Link className="font-medium underline-offset-4 hover:underline" href={`/workspace/knowledge/sources/${source.id}`}>{source.title}</Link>
-                        <div className="truncate text-xs text-muted-foreground">{source.canonicalUri}</div>
+                        <div className="truncate text-xs text-muted-foreground">{source.canonicalUri.replace("deerflow://uploads/", "")}</div>
                       </td>
                       <td className="px-3 py-3"><Badge variant="outline">{source.sourceType.toUpperCase()}</Badge></td>
-                      <td className="px-3 py-3">rev {source.revisions.find((revision) => revision.id === source.currentRevisionId)?.revisionNumber}</td>
+                      <td className="px-3 py-3">
+                        <div>当前版本：Revision {source.revisions.find((revision) => revision.id === source.currentRevisionId)?.revisionNumber}</div>
+                        <div className="text-xs text-muted-foreground">{source.revisions.length} 个版本</div>
+                      </td>
                       <td className="px-3 py-3"><StatusBadge value={source.status} /></td>
                       <td className="px-3 py-3">{source.claimCount} / {source.chunkCount}</td>
                       <td className="px-3 py-3">{formatKnowledgeDate(source.updatedAt)}</td>
@@ -1239,7 +1279,7 @@ function SourcesView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceD
         </CardContent>
       </Card>
       <Card>
-        <CardHeader><CardTitle>Recent ingestion evidence</CardTitle></CardHeader>
+        <CardHeader><CardTitle>最近证据片段</CardTitle></CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
           {dataset.citations.slice(0, 2).map((citation) => (
             <CitationButton key={citation.citationId} citation={citation} onOpenCitation={onOpenCitation} />
@@ -1354,39 +1394,40 @@ function SourceDetailView({ dataset, sourceId, onOpenCitation }: { dataset: Know
           <CardDescription>{source.canonicalUri}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-4">
-          <Meta label="Type" value={source.sourceType.toUpperCase()} />
-          <Meta label="Status" value={source.status} />
-          <Meta label="Current revision" value={`rev ${currentRevision?.revisionNumber ?? "unknown"}`} />
-          <Meta label="Updated" value={formatKnowledgeDate(source.updatedAt)} />
+          <Meta label="文件名" value={source.canonicalUri.replace("deerflow://uploads/", "")} />
+          <Meta label="状态" value={source.status} />
+          <Meta label="当前版本" value={`Revision ${currentRevision?.revisionNumber ?? "unknown"}`} />
+          <Meta label="更新时间" value={formatKnowledgeDate(source.updatedAt)} />
         </CardContent>
       </Card>
       <Tabs defaultValue="revisions">
         <TabsList className="flex w-full overflow-x-auto">
-          <TabsTrigger value="revisions">Revisions</TabsTrigger>
-          <TabsTrigger value="chunks">Chunks</TabsTrigger>
-          <TabsTrigger value="evidence">Evidence</TabsTrigger>
-          <TabsTrigger value="ingestion">Ingestion</TabsTrigger>
+          <TabsTrigger value="revisions">版本</TabsTrigger>
+          <TabsTrigger value="chunks">分块</TabsTrigger>
+          <TabsTrigger value="evidence">证据</TabsTrigger>
+          <TabsTrigger value="ingestion">摄取任务</TabsTrigger>
         </TabsList>
         <TabsContent value="revisions" className="grid gap-4 lg:grid-cols-[1fr_1fr]">
           <Card>
-            <CardHeader><CardTitle>Revision history</CardTitle></CardHeader>
+            <CardHeader><CardTitle>版本历史</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               {source.revisions.map((revision) => (
                 <div key={revision.id} className="rounded-md border p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium">Revision {revision.revisionNumber}</div>
-                    {revision.id === source.currentRevisionId ? <Badge>Current</Badge> : <Badge variant="outline">Historical</Badge>}
+                    {revision.id === source.currentRevisionId ? <Badge>当前版本</Badge> : <Badge variant="outline">历史版本</Badge>}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">{revision.contentHash} / {formatKnowledgeDate(revision.createdAt)}</div>
+                  {revision.chunks[0]?.content ? <p className="mt-2 text-sm">{revision.chunks[0].content}</p> : null}
                   <div className="mt-2 flex gap-2 text-xs"><StatusBadge value={revision.parseStatus} /><StatusBadge value={revision.indexStatus} /></div>
                 </div>
               ))}
             </CardContent>
           </Card>
           <Card>
-            <CardHeader><CardTitle>Revision diff</CardTitle><CardDescription>UNCHANGED / ADDED / REMOVED / MODIFIED / MOVED changes.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>版本差异摘要</CardTitle><CardDescription>展示当前 fixture 中已经识别出的变化，不重新计算 diff。</CardDescription></CardHeader>
             <CardContent className="space-y-2">
-              {source.diff.length === 0 ? <EmptyState title="No revision diff for this source" /> : source.diff.map((item) => (
+              {source.diff.length === 0 ? <EmptyState title="这个来源没有版本差异" /> : source.diff.map((item) => (
                 <div key={item.id} className="rounded-md border p-3">
                   <StatusBadge value={item.changeType} />
                   <p className="mt-2 text-sm">{item.summary}</p>
@@ -1410,7 +1451,7 @@ function SourceDetailView({ dataset, sourceId, onOpenCitation }: { dataset: Know
           {citations.map((citation) => <CitationButton key={citation.citationId} citation={citation} onOpenCitation={onOpenCitation} />)}
         </TabsContent>
         <TabsContent value="ingestion" className="grid gap-3">
-          {source.latestJobId ? <JobProgressCard job={dataset.jobs.find((job) => job.job_id === source.latestJobId)!} events={dataset.jobEvents[source.latestJobId] ?? []} /> : <EmptyState title="No ingestion job recorded" />}
+          {source.latestJobId ? <JobProgressCard job={dataset.jobs.find((job) => job.job_id === source.latestJobId)!} events={dataset.jobEvents[source.latestJobId] ?? []} /> : <EmptyState title="没有记录摄取任务" />}
         </TabsContent>
       </Tabs>
     </div>
@@ -1418,7 +1459,8 @@ function SourceDetailView({ dataset, sourceId, onOpenCitation }: { dataset: Know
 }
 
 function SearchView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
-  const [query, setQuery] = useState("storage rollout");
+  const recommendedQueries = ["Project Atlas 的生产数据库方案是什么？", "外部通知是否可以自动发送？"];
+  const [query, setQuery] = useState(recommendedQueries[0]!);
   const [loading, setLoading] = useState(false);
   const results = searchKnowledge(dataset, query);
   function runSearch() {
@@ -1428,23 +1470,33 @@ function SearchView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDa
   return (
     <div className="grid gap-4">
       <Card>
-        <CardHeader><CardTitle>Hybrid retrieval</CardTitle><CardDescription>Lexical, Vector, Graph, and Fused Result channels are shown only when present in the response.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>混合检索</CardTitle><CardDescription>推荐查询会使用同一组 Project Atlas 证据，不创建独立假结果。</CardDescription></CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-            <Input aria-label="Knowledge search query" value={query} onChange={(event) => setQuery(event.target.value)} />
-            <Button onClick={runSearch} disabled={loading}>{loading ? <Loader2Icon className="size-4 animate-spin" /> : <SearchIcon className="size-4" />} Search</Button>
+            <Input aria-label="知识检索查询" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <Button onClick={runSearch} disabled={loading}>{loading ? <Loader2Icon className="size-4 animate-spin" /> : <SearchIcon className="size-4" />} 检索</Button>
           </div>
-          <div className="flex flex-wrap gap-2 text-sm text-muted-foreground"><FilterIcon className="size-4" /> Source, type, time, and entity filters are ready for Gateway integration.</div>
+          <div className="flex flex-wrap gap-2">
+            {recommendedQueries.map((item) => (
+              <Button key={item} size="sm" variant="outline" onClick={() => setQuery(item)}>{item}</Button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2 text-sm text-muted-foreground"><FilterIcon className="size-4" /> 结果展示来源、Revision、Citation 与匹配原因。</div>
         </CardContent>
       </Card>
-      {loading ? <Skeleton className="h-48" /> : results.length === 0 ? <EmptyState title="No evidence matched the query" /> : (
+      {loading ? <Skeleton className="h-48" /> : results.length === 0 ? <EmptyState title="没有匹配的证据" /> : (
         <div className="grid gap-3">
-          <div className="text-sm text-muted-foreground">{formatKnowledgeCount(results.length, "result")}</div>
+          <div className="text-sm text-muted-foreground">{results.length} 条结果</div>
           {results.map((result) => (
             <Card key={result.id}>
-              <CardHeader><CardTitle>{result.title}</CardTitle><CardDescription>{result.retrievalChannels.join(" / ")}</CardDescription></CardHeader>
+              <CardHeader>
+                <CardTitle>{result.title}</CardTitle>
+                <CardDescription>{result.retrievalChannels.join(" / ")} · Revision {dataset.sources.find((source) => source.id === result.sourceId)?.revisions.find((revision) => revision.id === result.revisionId)?.revisionNumber}</CardDescription>
+              </CardHeader>
               <CardContent className="space-y-3">
                 <p>{result.snippet}</p>
+                <Meta label="来源" value={dataset.sources.find((source) => source.id === result.sourceId)?.title ?? result.sourceId} />
+                <Meta label="匹配原因" value="直接证据和结构化主张共同命中当前问题" />
                 <CitationRow citationIds={result.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} />
               </CardContent>
             </Card>
@@ -1461,21 +1513,21 @@ function AnalysisView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspace
   return (
     <div className="grid gap-4">
       <Card>
-        <CardHeader><CardTitle>Evidence-grounded analysis</CardTitle><CardDescription>Structured output separates supported facts, inference, unsupported claims, and unresolved questions.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>证据化分析</CardTitle><CardDescription>结构化区分有证据支持的事实、推断、缺乏证据的主张和待解决问题。</CardDescription></CardHeader>
         <CardContent className="space-y-3">
-          <Textarea aria-label="Analysis question" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <Textarea aria-label="分析问题" value={query} onChange={(event) => setQuery(event.target.value)} />
           <div className="flex gap-2">
-            <Button onClick={() => { setRunning(true); window.setTimeout(() => setRunning(false), 300); }} disabled={isRunning}>{isRunning ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />} Re-analyze</Button>
-            <Button variant="outline" onClick={() => void navigator.clipboard?.writeText(dataset.artifacts[0]?.markdown ?? dataset.analysis.answer)}>Copy Markdown</Button>
+            <Button onClick={() => { setRunning(true); window.setTimeout(() => setRunning(false), 300); }} disabled={isRunning}>{isRunning ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />} 重新分析</Button>
+            <Button variant="outline" onClick={() => void navigator.clipboard?.writeText(dataset.artifacts[0]?.markdown ?? dataset.analysis.answer)}>复制 Markdown</Button>
           </div>
         </CardContent>
       </Card>
       {isRunning ? <Skeleton className="h-72" /> : (
         <div className="grid gap-4 xl:grid-cols-2">
-          <AnalysisSection title="Supported Facts" tone="success" items={dataset.analysis.supportedFacts.map((item) => ({ body: item.statement, meta: `${Math.round(item.confidence * 100)}% confidence`, citationIds: item.citationIds }))} dataset={dataset} onOpenCitation={onOpenCitation} />
-          <AnalysisSection title="Inferred Conclusions" tone="warning" items={dataset.analysis.inferredConclusions.map((item) => ({ body: item.statement, meta: item.reasoningSummary, citationIds: item.citationIds }))} dataset={dataset} onOpenCitation={onOpenCitation} />
-          <AnalysisSection title="Unsupported Claims" tone="danger" items={dataset.analysis.unsupportedClaims.map((item) => ({ body: item.statement, meta: item.reason, citationIds: [] }))} dataset={dataset} onOpenCitation={onOpenCitation} />
-          <AnalysisSection title="Unresolved Questions" tone="neutral" items={dataset.analysis.unresolvedQuestions.map((item) => ({ body: item.question, meta: `${item.whyUnresolved} Needed: ${item.neededEvidence}`, citationIds: [] }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+          <AnalysisSection title="有证据支持的事实" tone="success" items={dataset.analysis.supportedFacts.map((item) => ({ body: item.statement, meta: `${Math.round(item.confidence * 100)}% 置信度`, citationIds: item.citationIds }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+          <AnalysisSection title="推断" tone="warning" items={dataset.analysis.inferredConclusions.map((item) => ({ body: item.statement, meta: item.reasoningSummary, citationIds: item.citationIds }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+          <AnalysisSection title="缺乏证据的主张" tone="danger" items={dataset.analysis.unsupportedClaims.map((item) => ({ body: item.statement, meta: item.reason, citationIds: [] }))} dataset={dataset} onOpenCitation={onOpenCitation} />
+          <AnalysisSection title="待解决问题" tone="neutral" items={dataset.analysis.unresolvedQuestions.map((item) => ({ body: item.question, meta: `${item.whyUnresolved} 需要证据：${item.neededEvidence}`, citationIds: [] }))} dataset={dataset} onOpenCitation={onOpenCitation} />
         </div>
       )}
     </div>
@@ -1545,7 +1597,7 @@ function ConflictsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
         <Select value={classification} onValueChange={setClassification}>
           <SelectTrigger className="w-72" aria-label="Filter conflict classification"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All classifications</SelectItem>
+            <SelectItem value="all">全部冲突类型</SelectItem>
             {["DIRECT_CONTRADICTION", "TEMPORAL_UPDATE", "SCOPE_OR_CONDITION_DIFFERENCE", "SOURCE_DISAGREEMENT", "POSSIBLE_CONFLICT", "INSUFFICIENT_EVIDENCE"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
           </SelectContent>
         </Select>
@@ -1558,7 +1610,7 @@ function ConflictsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
 function WorkflowsView({ dataset, demoMode = true, onRefresh }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean; onRefresh?: () => void }) {
   const client = useKnowledgeClient();
   const [type, setType] = useState<WorkflowType>("decision_memo");
-  const [objective, setObjective] = useState("Prepare rollout decision");
+  const [objective, setObjective] = useState("审查 Project Atlas 架构变更");
   const mutation = useMutation({
     mutationFn: async (action: { kind: "create" | "advance" | "pause" | "resume" | "retry" | "artifact"; workflowId?: string }) => {
       if (demoMode) return {};
@@ -1588,15 +1640,15 @@ function WorkflowsView({ dataset, demoMode = true, onRefresh }: { dataset: Knowl
   return (
     <div className="grid gap-4 xl:grid-cols-[340px_1fr]">
       <Card>
-        <CardHeader><CardTitle>Create workflow</CardTitle><CardDescription>Seven workflow types are represented; actions depend on real Gateway capability.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>创建工作流</CardTitle><CardDescription>Demo 展示 Project Atlas 的决策、知识更新审查和行动草稿流程。</CardDescription></CardHeader>
         <CardContent className="space-y-3">
           <Select value={type} onValueChange={(value) => setType(value as WorkflowType)}>
             <SelectTrigger aria-label="Workflow type"><SelectValue /></SelectTrigger>
             <SelectContent>{Object.entries(workflowTypeLabels).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent>
           </Select>
           <Input aria-label="Workflow objective" value={objective} onChange={(event) => setObjective(event.target.value)} />
-          <Button disabled={busy || (!demoMode && objective.trim().length === 0)} onClick={() => demoMode ? toast.success(`${workflowTypeLabels[type]} accepted in demo`) : mutation.mutate({ kind: "create" })}>{busy ? <Loader2Icon className="size-4 animate-spin" /> : <PlayIcon className="size-4" />} Create workflow</Button>
-          <p className="text-xs text-muted-foreground">Knowledge-to-Action creates an action draft only. Execution stays behind approval.</p>
+          <Button disabled={busy || (!demoMode && objective.trim().length === 0)} onClick={() => demoMode ? toast.success(`${workflowTypeLabels[type]} accepted in demo`) : mutation.mutate({ kind: "create" })}>{busy ? <Loader2Icon className="size-4 animate-spin" /> : <PlayIcon className="size-4" />} 创建工作流</Button>
+          <p className="text-xs text-muted-foreground">Knowledge-to-Action 只生成行动草稿，执行必须经过审批。</p>
         </CardContent>
       </Card>
       <div className="grid gap-4">
@@ -1609,11 +1661,11 @@ function WorkflowsView({ dataset, demoMode = true, onRefresh }: { dataset: Knowl
                 {workflow.steps.map((step) => <WorkflowStepRow key={step.key} step={step} />)}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" disabled={busy || isTerminalWorkflowStatus(workflow.status) || workflow.status === "PAUSED" || workflow.status === "REQUIRES_APPROVAL"} onClick={() => mutation.mutate({ kind: "advance", workflowId: workflow.id })}><PlayIcon className="size-4" /> Advance</Button>
-                <Button size="sm" variant="outline" disabled={busy || workflow.status !== "RUNNING"} onClick={() => mutation.mutate({ kind: "pause", workflowId: workflow.id })}><PauseIcon className="size-4" /> Pause</Button>
-                <Button size="sm" variant="outline" disabled={busy || workflow.status !== "PAUSED"} onClick={() => mutation.mutate({ kind: "resume", workflowId: workflow.id })}><PlayIcon className="size-4" /> Resume</Button>
-                <Button size="sm" variant="outline" disabled={busy || !workflow.steps.some((step) => step.status === "FAILED")} onClick={() => mutation.mutate({ kind: "retry", workflowId: workflow.id })}><RefreshCwIcon className="size-4" /> Retry</Button>
-                <Button size="sm" variant="outline" disabled={busy || !["COMPLETED", "SUCCEEDED"].includes(workflow.status)} onClick={() => mutation.mutate({ kind: "artifact", workflowId: workflow.id })}>Generate artifact</Button>
+                <Button size="sm" variant="outline" disabled={busy || isTerminalWorkflowStatus(workflow.status) || workflow.status === "PAUSED" || workflow.status === "REQUIRES_APPROVAL"} onClick={() => mutation.mutate({ kind: "advance", workflowId: workflow.id })}><PlayIcon className="size-4" /> 推进</Button>
+                <Button size="sm" variant="outline" disabled={busy || workflow.status !== "RUNNING"} onClick={() => mutation.mutate({ kind: "pause", workflowId: workflow.id })}><PauseIcon className="size-4" /> 暂停</Button>
+                <Button size="sm" variant="outline" disabled={busy || workflow.status !== "PAUSED"} onClick={() => mutation.mutate({ kind: "resume", workflowId: workflow.id })}><PlayIcon className="size-4" /> 恢复</Button>
+                <Button size="sm" variant="outline" disabled={busy || !workflow.steps.some((step) => step.status === "FAILED")} onClick={() => mutation.mutate({ kind: "retry", workflowId: workflow.id })}><RefreshCwIcon className="size-4" /> 重试</Button>
+                <Button size="sm" variant="outline" disabled={busy || !["COMPLETED", "SUCCEEDED"].includes(workflow.status)} onClick={() => mutation.mutate({ kind: "artifact", workflowId: workflow.id })}>生成产物</Button>
               </div>
             </CardContent>
           </Card>
@@ -1644,7 +1696,7 @@ function ArtifactsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
   return (
     <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
       <Card>
-        <CardHeader><CardTitle>Artifacts</CardTitle><CardDescription>Workflow outputs with provenance and stale status.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>正式产物</CardTitle><CardDescription>展示工作流产物的来源、证据链接和是否过期。</CardDescription></CardHeader>
         <CardContent className="space-y-2">
           {dataset.artifacts.map((artifact) => (
             <button key={artifact.id} type="button" onClick={() => setSelectedId(artifact.id)} className={cn("w-full rounded-md border p-3 text-left transition hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", selectedId === artifact.id && "bg-accent")}>
@@ -1654,7 +1706,7 @@ function ArtifactsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
           ))}
         </CardContent>
       </Card>
-      {selected ? <ArtifactDetail artifact={selected} dataset={dataset} onOpenCitation={onOpenCitation} /> : <EmptyState title="Select an artifact" />}
+      {selected ? <ArtifactDetail artifact={selected} dataset={dataset} onOpenCitation={onOpenCitation} /> : <EmptyState title="请选择一个产物" />}
     </div>
   );
 }
@@ -1699,9 +1751,9 @@ function ApprovalsView({ dataset, demoMode = true, onRefresh }: { dataset: Knowl
     <div className="grid gap-4">
       <Alert>
         <ShieldCheckIcon className="size-4" />
-        <AlertTitle>Approval chain</AlertTitle>
+        <AlertTitle>审批链路</AlertTitle>
         <AlertDescription>
-          Action Draft {"->"} Approval Request {"->"} Approved / Rejected {"->"} Action Execution {"->"} Succeeded / Failed / Reconciliation Required.
+          公共 Demo 没有执行真实外部副作用。待审批通知只会通过 Fake Action Adapter 记录伪执行。
         </AlertDescription>
       </Alert>
       {dataset.approvals.map((approval) => (
@@ -1709,21 +1761,21 @@ function ApprovalsView({ dataset, demoMode = true, onRefresh }: { dataset: Knowl
           <CardHeader><CardTitle>{approval.actionType}</CardTitle><CardDescription>{approval.payloadSummary}</CardDescription></CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap gap-2"><StatusBadge value={approval.status} /><StatusBadge value={approval.executionStatus ?? "PENDING"} /><RiskBadge risk={approval.riskLevel} /></div>
-            <div className="grid gap-2 md:grid-cols-3"><Meta label="Payload hash" value={approval.payloadHash} /><Meta label="Current hash" value={approval.currentPayloadHash ?? approval.payloadHash} /><Meta label="Created" value={formatKnowledgeDate(approval.createdAt)} /></div>
+            <div className="grid gap-2 md:grid-cols-3"><Meta label="Payload hash" value={approval.payloadHash} /><Meta label="当前 hash" value={approval.currentPayloadHash ?? approval.payloadHash} /><Meta label="创建时间" value={formatKnowledgeDate(approval.createdAt)} /></div>
             {approval.isPayloadStale ? (
               <Alert variant="destructive">
                 <CircleAlertIcon className="size-4" />
-                <AlertTitle>Payload invalidated</AlertTitle>
+                <AlertTitle>行动草稿已失效</AlertTitle>
                 <AlertDescription>{approval.invalidationReason ?? "Action draft changed after approval."}</AlertDescription>
               </Alert>
             ) : null}
             {previewByApproval[approval.id] ? <div className="rounded-md border bg-muted/40 p-3 text-sm">{previewByApproval[approval.id]}</div> : null}
             <div className="rounded-md border p-3 text-sm">{approval.audit.map((item) => <div key={item}>{item}</div>)}</div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" disabled={mutation.isPending} onClick={() => demoMode ? toast.info("Demo preview loaded") : mutation.mutate({ kind: "preview", approval })}>Preview</Button>
-              <Button size="sm" disabled={mutation.isPending || approval.status !== "AWAITING_APPROVAL"} onClick={() => demoMode ? toast.success("Demo approval recorded") : mutation.mutate({ kind: "approve", approval })}>Approve</Button>
-              <Button size="sm" variant="outline" disabled={mutation.isPending || approval.status !== "AWAITING_APPROVAL"} onClick={() => demoMode ? toast.info("Demo rejection recorded") : mutation.mutate({ kind: "reject", approval })}>Reject</Button>
-              <Button size="sm" variant="outline" disabled={mutation.isPending || approval.status !== "APPROVED" || approval.executionStatus === "SUCCEEDED"} onClick={() => demoMode ? toast.success("Demo fake action executed") : mutation.mutate({ kind: "execute", approval })}>Execute fake action</Button>
+              <Button size="sm" variant="outline" disabled={mutation.isPending} onClick={() => demoMode ? toast.info("Demo preview loaded") : mutation.mutate({ kind: "preview", approval })}>预览草稿</Button>
+              <Button size="sm" disabled={mutation.isPending || approval.status !== "AWAITING_APPROVAL"} onClick={() => demoMode ? toast.success("Demo approval recorded") : mutation.mutate({ kind: "approve", approval })}>批准</Button>
+              <Button size="sm" variant="outline" disabled={mutation.isPending || approval.status !== "AWAITING_APPROVAL"} onClick={() => demoMode ? toast.info("Demo rejection recorded") : mutation.mutate({ kind: "reject", approval })}>拒绝</Button>
+              <Button size="sm" variant="outline" disabled={mutation.isPending || approval.status !== "APPROVED" || approval.executionStatus === "SUCCEEDED"} onClick={() => demoMode ? toast.success("Demo fake action executed") : mutation.mutate({ kind: "execute", approval })}>记录伪执行</Button>
             </div>
           </CardContent>
         </Card>
@@ -1739,10 +1791,10 @@ function ActivityView({ dataset }: { dataset: KnowledgeWorkspaceDataset }) {
     <Card>
       <CardHeader>
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <div><CardTitle>Activity</CardTitle><CardDescription>Unified view of available jobs, workflows, artifacts, approvals, actions, and updates.</CardDescription></div>
+          <div><CardTitle>活动时间线</CardTitle><CardDescription>按统一故事顺序展示来源、工作流、产物、审批和行动事件。</CardDescription></div>
           <Select value={type} onValueChange={setType}>
             <SelectTrigger className="w-48" aria-label="Filter activity type"><SelectValue /></SelectTrigger>
-            <SelectContent>{["all", "ingestion", "workflow", "artifact", "approval", "action", "update"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent>
+            <SelectContent>{["all", "ingestion", "workflow", "artifact", "approval", "action", "update"].map((item) => <SelectItem key={item} value={item}>{item === "all" ? "全部" : item}</SelectItem>)}</SelectContent>
           </Select>
         </div>
       </CardHeader>
@@ -1776,21 +1828,21 @@ function StatusBadge({ value }: { value: string }) {
 }
 
 function RiskBadge({ risk }: { risk: string }) {
-  return <Badge variant={risk === "HIGH" ? "destructive" : "outline"} className="rounded-md">Risk: {risk}</Badge>;
+  return <Badge variant={risk === "HIGH" ? "destructive" : "outline"} className="rounded-md">风险：{risk}</Badge>;
 }
 
 function CitationButton({ citation, onOpenCitation }: { citation: KnowledgeCitation; onOpenCitation: (citation: KnowledgeCitation) => void }) {
   return (
     <button type="button" onClick={() => onOpenCitation(citation)} className="rounded-md border p-3 text-left transition hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-      <div className="flex items-center gap-2"><Badge variant={citation.role === "direct" ? "secondary" : "outline"}>{citation.role === "direct" ? "Direct evidence" : "Parent context"}</Badge><span className="text-xs text-muted-foreground">{citation.sourceTitle}</span></div>
+      <div className="flex items-center gap-2"><Badge variant={citation.role === "direct" ? "secondary" : "outline"}>{citation.role === "direct" ? "直接证据" : "上级上下文"}</Badge><span className="text-xs text-muted-foreground">{citation.sourceTitle}</span></div>
       <p className="mt-2 text-sm">&ldquo;{citation.quotedText}&rdquo;</p>
     </button>
   );
 }
 
 function CitationRow({ citationIds, dataset, onOpenCitation }: { citationIds: string[]; dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
-  if (citationIds.length === 0) return <p className="text-sm text-muted-foreground">No direct citation available.</p>;
-  return <div className="flex flex-wrap gap-2">{citationIds.map((id) => { const citation = dataset.citations.find((item) => item.citationId === id); return citation ? <Button key={id} size="sm" variant="outline" onClick={() => onOpenCitation(citation)}>{citation.role === "direct" ? "Evidence" : "Context"} {id}</Button> : null; })}</div>;
+  if (citationIds.length === 0) return <p className="text-sm text-muted-foreground">没有直接 Citation。</p>;
+  return <div className="flex flex-wrap gap-2">{citationIds.map((id) => { const citation = dataset.citations.find((item) => item.citationId === id); return citation ? <Button key={id} size="sm" variant="outline" onClick={() => onOpenCitation(citation)}>{citation.role === "direct" ? "证据" : "上下文"} {id}</Button> : null; })}</div>;
 }
 
 function CitationSheet({ citation, onOpenChange }: { citation: KnowledgeCitation | null; onOpenChange: (open: boolean) => void }) {
@@ -1798,19 +1850,19 @@ function CitationSheet({ citation, onOpenChange }: { citation: KnowledgeCitation
     <Sheet open={Boolean(citation)} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-xl">
         <SheetHeader>
-          <SheetTitle>Citation detail</SheetTitle>
-          <SheetDescription>Source, revision, chunk, location, quote, and offsets.</SheetDescription>
+          <SheetTitle>Citation 详情</SheetTitle>
+          <SheetDescription>来源、Revision、分块、位置、原文摘录和偏移量。</SheetDescription>
         </SheetHeader>
         {citation ? (
           <div className="space-y-4 px-4">
             <CitationButton citation={citation} onOpenCitation={() => undefined} />
             <div className="grid gap-2 text-sm">
-              <Meta label="Source" value={citation.sourceTitle} />
+              <Meta label="来源" value={citation.sourceTitle} />
               <Meta label="Revision" value={citation.revisionId} />
               <Meta label="Chunk" value={citation.chunkId} />
-              <Meta label="Location" value={[citation.pageNumber ? `page ${citation.pageNumber}` : undefined, citation.sheetName, citation.sectionPath?.join(" / ")].filter(Boolean).join(" / ") || "Not provided"} />
+              <Meta label="位置" value={[citation.pageNumber ? `page ${citation.pageNumber}` : undefined, citation.sheetName, citation.sectionPath?.join(" / ")].filter(Boolean).join(" / ") || "未提供"} />
               <Meta label="Offsets" value={`${citation.startOffset}-${citation.endOffset}`} />
-              <Meta label="Evidence role" value={citation.role === "direct" ? "Direct evidence" : "Parent context only"} />
+              <Meta label="证据角色" value={citation.role === "direct" ? "直接证据" : "仅上级上下文"} />
             </div>
           </div>
         ) : null}
@@ -1827,15 +1879,15 @@ function ConflictSummary({ conflict, dataset, onOpenCitation, expanded = false }
       <CardHeader><CardTitle>{conflict.summary}</CardTitle><CardDescription>{conflict.classification} / {formatKnowledgeDate(conflict.updatedAt)}</CardDescription></CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap gap-2"><StatusBadge value={conflict.status} /><Badge variant="outline">{conflict.scopeOrCondition}</Badge></div>
-        {expanded ? <div className="grid gap-2 md:grid-cols-2">{claims.map((claim) => <div key={claim.id} className="rounded-md border p-3 text-sm"><div className="font-medium">{claim.id === conflict.activeClaimId ? "Current active" : claim.status}</div><p className="mt-1">{claim.text}</p><p className="mt-1 text-xs text-muted-foreground">{claim.normalizedSubject} / {claim.predicate} / {claim.normalizedObject}</p><CitationRow citationIds={claim.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} /></div>)}</div> : null}
+        {expanded ? <div className="grid gap-2 md:grid-cols-2">{claims.map((claim, index) => <div key={claim.id} className="rounded-md border p-3 text-sm"><div className="font-medium">主张 {index + 1}{claim.id === conflict.activeClaimId ? "（当前采用）" : ""}</div><p className="mt-1">{claim.text}</p><p className="mt-1 text-xs text-muted-foreground">{claim.normalizedSubject} / {claim.predicate} / {claim.normalizedObject}</p><CitationRow citationIds={claim.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} /></div>)}</div> : null}
         {affectedArtifacts.length > 0 ? (
           <div className="rounded-md border p-3 text-sm">
-            <div className="font-medium">Affected artifacts</div>
+            <div className="font-medium">受影响产物</div>
             <div className="mt-2 flex flex-wrap gap-2">{affectedArtifacts.map((artifact) => <Badge key={artifact.id} variant="outline">{artifact.title}</Badge>)}</div>
           </div>
         ) : null}
-        <p className="text-sm text-muted-foreground">Recommended next step: {conflict.recommendedNextStep}</p>
-        {expanded ? <Button size="sm" variant="outline" disabled>Resolve conflict</Button> : null}
+        <p className="text-sm text-muted-foreground">建议下一步：{conflict.recommendedNextStep}</p>
+        {expanded ? <Button size="sm" variant="outline" disabled>处理冲突</Button> : null}
       </CardContent>
     </Card>
   );
@@ -1860,11 +1912,11 @@ function ArtifactDetail({ artifact, dataset, onOpenCitation }: { artifact: Knowl
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2"><StatusBadge value={artifact.validationStatus} /><StatusBadge value={artifact.stalenessStatus} /></div>
         <div className="grid gap-2 md:grid-cols-3">
-          <Meta label="Workflow origin" value={workflow ? `${workflowTypeLabels[workflow.workflowType]} / ${workflow.id}` : artifact.workflowId ?? "Not linked"} />
-          <Meta label="Evidence links" value={String(artifact.citationIds.length)} />
-          <Meta label="Export" value={artifact.markdown ? "Markdown available" : "No content available"} />
+          <Meta label="生成工作流" value={workflow ? `${workflowTypeLabels[workflow.workflowType]} / ${workflow.id}` : artifact.workflowId ?? "未关联"} />
+          <Meta label="Evidence Links" value={String(artifact.citationIds.length)} />
+          <Meta label="Markdown 内容" value={artifact.markdown ? "可预览" : "无内容"} />
         </div>
-        {artifact.staleReasons.length > 0 ? <Alert><AlertTriangleIcon className="size-4" /><AlertTitle>Stale impact</AlertTitle><AlertDescription>{artifact.staleReasons.join(" ")}</AlertDescription></Alert> : null}
+        {artifact.staleReasons.length > 0 ? <Alert><AlertTriangleIcon className="size-4" /><AlertTitle>过期原因</AlertTitle><AlertDescription>{artifact.staleReasons.join(" ")}</AlertDescription></Alert> : null}
         <pre className="whitespace-pre-wrap rounded-md border bg-muted/30 p-4 text-sm">{artifact.markdown}</pre>
         <div className="grid gap-2">
           {citations.map((citation) => (
@@ -1872,7 +1924,7 @@ function ArtifactDetail({ artifact, dataset, onOpenCitation }: { artifact: Knowl
           ))}
         </div>
         <CitationRow citationIds={artifact.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} />
-        <Button variant="outline" disabled={!artifact.markdown}>Download Markdown</Button>
+        <Button variant="outline" disabled={!artifact.markdown}>下载 Markdown</Button>
       </CardContent>
     </Card>
   );
@@ -1921,7 +1973,7 @@ function EmptyState({ title }: { title: string }) {
       <EmptyHeader>
         <EmptyMedia variant="icon"><BookOpenIcon /></EmptyMedia>
         <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>No production data is invented for this state.</EmptyDescription>
+        <EmptyDescription>此状态不会伪造生产数据。</EmptyDescription>
       </EmptyHeader>
     </Empty>
   );
