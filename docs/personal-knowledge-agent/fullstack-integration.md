@@ -4,6 +4,8 @@ Last updated: 2026-06-18
 
 This stage connects the Knowledge Workspace production UI to the project-owned Gateway and Knowledge APIs. It does not require OpenAI, Anthropic, Tavily, Firecrawl, DeepSeek, or any other external model/API service. Verification used fake/deterministic/local providers plus a temporary local pgvector PostgreSQL container.
 
+Final unified acceptance is complete. The latest Knowledge Alembic head is `20260618_0006`, with a single revision chain from `20260616_0001` through `20260618_0006`.
+
 ## Completed Vertical Slice
 
 - `POST /api/knowledge/ingestions` accepts browser file imports without trusted identity fields.
@@ -34,6 +36,7 @@ This stage connects the Knowledge Workspace production UI to the project-owned G
 - Production Workflow UI uses the formal Gateway contracts for create, advance, pause, resume, retry, and artifact generation.
 - Production Artifact detail renders Gateway markdown as text and surfaces provenance, workflow origin, validation, staleness, and evidence-link counts without fabricating unavailable data.
 - Production Approvals UI lists real Gateway approval records, previews safe action summaries without side effects, approves/rejects through Gateway decisions, executes fake actions through the formal action endpoint, and shows persisted execution and audit state after refresh.
+- Production Overview tolerates fresh workspaces without artifacts or conflicts, and production search renders duplicate retrieved candidates with stable keys.
 
 ## Verification
 
@@ -61,7 +64,17 @@ This stage connects the Knowledge Workspace production UI to the project-owned G
 - Backend Knowledge suite: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped`.
 - Backend full lint: `make lint` -> passed.
 - Backend full test: `make test` -> `4555 passed, 32 skipped`.
+- Final Alembic audit: one head, `20260618_0006`; history chain `20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005 -> 20260618_0006`.
+- Final formal Gateway jobs live PostgreSQL: `KNOWLEDGE_GATEWAY_JOB_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_gateway_jobs_live_postgres.py -q` -> `4 passed`.
+- Final Knowledge full-stack live PostgreSQL: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `6 passed`.
+- Final Microsoft Edge smoke against local Gateway + Next dev in production Knowledge mode: UI submitted `/mnt/user-data/uploads/edge-final-smoke.txt`, Gateway returned `202`, durable worker completed the job, Sources and Activity showed persisted production data, and Search returned cited ingested evidence through `/api/knowledge/search`.
+- Final frontend suite: `npx pnpm@10.26.2 test` -> `339 passed`; `npx pnpm@10.26.2 typecheck` -> passed; `npx pnpm@10.26.2 lint` -> passed.
+- Final production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Final demo/static build: `NEXT_PUBLIC_STATIC_WEBSITE_ONLY=true NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=true npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Final backend suite: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped`; `make lint` -> passed; `make test` -> `4555 passed, 32 skipped`.
 
 ## Remaining Gaps
 
 The remaining gaps are product/API scope, not external service requirements. Real Gmail, Calendar, third-party task systems, and model-backed external actions are still not connected. See `frontend-backend-contract-gaps.md` for the detailed contract table.
+
+Next stage: Evaluation / Security / E2E Hardening. All action dispatch in this stage still uses deterministic fake adapters; real Gmail, Calendar, task, and external export connectors remain future scope.

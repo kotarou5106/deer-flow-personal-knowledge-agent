@@ -1,6 +1,8 @@
 # Frontend Backend Contract Gaps
 
-The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model, ingestion/search, workflow, artifact, approval, and fake action vertical slices are now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
+The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model, ingestion/search, analysis, revision/conflict, workflow, artifact, approval, and fake action vertical slices are now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
+
+Final Full-stack Integration status: completed. Items in the completed section below are closed for this stage. The table that follows is future product/API scope for Evaluation / Security / E2E Hardening and later connector work.
 
 ## Completed In This Integration Stage
 
@@ -31,6 +33,12 @@ The Knowledge Workspace UI only calls or models formal Gateway contracts. The re
 - `POST /api/knowledge/actions/{approval_id}/execute`
 - `GET /api/knowledge/actions/executions/{execution_id}`
 - `GET /api/knowledge/audit?target_type=&target_id=`
+- `POST /api/knowledge/analyses`
+- `POST /api/knowledge/revisions/compare`
+- `POST /api/knowledge/update-reports`
+- `GET /api/knowledge/conflicts`
+- `GET /api/knowledge/conflicts/{conflict_group_id}`
+- `GET /api/knowledge/claims`
 
 ## Workflow / Artifact Status
 
@@ -42,11 +50,8 @@ Knowledge-to-Action is intentionally draft-first. Approval and fake action execu
 
 | Page | Needed Capability | Existing Domain Service / Tool | Missing Gateway Endpoint | Suggested Contract | Priority |
 | --- | --- | --- | --- | --- | --- |
-| Revisions | Revision diff by old/new revision | `updates.revision_diff` | `GET /api/knowledge/revisions/diff?old_revision_id=&new_revision_id=` | `{summary, items:[{change_type, old_chunk, new_chunk, summary}]}` | High |
 | Search | Related entity and claim metadata for retrieved chunks | retrieval service | Extend `POST /api/knowledge/search` response schema | `{results:[{snippet,citations,retrieval_channels,related_entities,related_claims}]}` | Medium |
-| Analysis | Fetch completed structured analysis result | analysis service and analysis job route | `GET /api/knowledge/analyses/{job_id}/result` | `AnalysisResult` schema from backend analysis module | High |
 | Graph | Entity/claim/source/evidence graph and neighbor expansion | retrieval graph module | `GET /api/knowledge/graph`, `GET /api/knowledge/graph/nodes/{id}/neighbors` | `{nodes, edges, cursors, truncated}` | Medium |
-| Conflicts | Conflict detail, affected artifacts, and recommended next step | updates conflict detector | Extend `GET /api/knowledge/conflicts` and add `GET /api/knowledge/conflicts/{id}` | `{classification,status,claims,citations,affected_artifacts,recommended_next_step}` | High |
 | Conflicts | Resolve or annotate conflict | no formal mutation exposed | `POST /api/knowledge/conflicts/{id}/decision` | `{decision, rationale}` with audit record | Medium |
 | Workflows | Per-step partial execution controls and manual parameter edits | workflow engine | No formal endpoint | Future mutation contract for a specific step run | Low |
 | Artifacts | Download/export formats beyond markdown preview and stored JSON payload | artifact storage service | Dedicated download/export route | File response or signed project-owned download URL | Medium |

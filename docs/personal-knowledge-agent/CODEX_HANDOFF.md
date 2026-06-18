@@ -22,7 +22,8 @@
 - Frontend read models: `f8046f01 feat: connect knowledge workspace read models to gateway`
 - Ingestion/SSE/Search vertical slice: completed in this branch.
 - Workflow/Artifact vertical slice: `6be985bd feat: connect knowledge workflows and artifacts full stack`.
-- Approval/Fake Action vertical slice: current branch work in progress until this handoff is committed.
+- Approval/Fake Action vertical slice: `0c099842 feat: connect knowledge approvals and fake actions full stack`.
+- Final Full-stack Integration acceptance: complete after live PostgreSQL, browser, frontend, backend, lint, and build verification.
 
 ## 5. Completed Stages
 
@@ -37,6 +38,8 @@
 ## 6. Current Completed Stage
 
 Frontend-Backend Integration now has working local vertical slices for read models, ingestion/search, workflows, artifacts, approvals, and fake actions. Production Knowledge mode calls Gateway-owned `/api/knowledge` endpoints for overview, sources, source detail, activity, ingestion jobs, job events, search, workflow create/advance/pause/resume/retry, artifact generation, artifact detail, artifact evidence links, approval create/list/detail/decision, action preview/execute/detail, and target audit history. File imports use Gateway trusted context and the durable worker, source detail exposes revisions/chunks, search maps retrieved chunk provenance into citations, workflow mutations run through the database-backed deterministic workflow engine, approvals enforce server-side payload hashes, fake action execution is idempotent, and production UI requests no trusted identity fields from the browser.
+
+The Full-stack Integration stage is complete. Final validation used a fresh temporary pgvector PostgreSQL container, formal Alembic migrations, formal Gateway app lifespan, durable worker startup/shutdown, Next production Knowledge mode, Microsoft Edge, deterministic local providers, and fake action adapters only.
 
 ## 7. Latest Alembic Head
 
@@ -80,6 +83,7 @@ Actual migration files:
 - Action execution records `SUCCEEDED`, `FAILED`, or `RECONCILIATION_REQUIRED`; idempotency and row locking prevent duplicate fake side effects under retry/concurrency.
 - Production Approvals UI uses Knowledge Client + Gateway Transport + TanStack Query. Demo mode remains deterministic and does not call Gateway.
 - Knowledge Workspace UI production mode does not fabricate data for missing Gateway endpoints. Remaining contract gaps are documented in `docs/personal-knowledge-agent/frontend-backend-contract-gaps.md`.
+- Production Overview handles fresh workspaces with no artifacts or conflicts, and production search handles duplicate retrieved candidates without React key warnings.
 
 ## 10. Tests Last Passed
 
@@ -123,6 +127,18 @@ Actual migration files:
 - Knowledge suite after Approval/Fake Action integration: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped, 1 warning`.
 - Backend full lint after Approval/Fake Action integration: `make lint` -> passed.
 - Backend full test after Approval/Fake Action integration: `make test` -> `4555 passed, 32 skipped, 11 warnings`.
+- Final Alembic audit: `uv run alembic -c packages/harness/deerflow/persistence/migrations/alembic.ini heads` -> single head `20260618_0006`; `history` confirmed `20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005 -> 20260618_0006`.
+- Final Gateway jobs live PostgreSQL: `KNOWLEDGE_GATEWAY_JOB_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_gateway_jobs_live_postgres.py -q` -> `4 passed, 1 warning`.
+- Final Knowledge full-stack live PostgreSQL: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `6 passed, 1 warning`.
+- Final Microsoft Edge smoke: local Gateway + Next dev in production Knowledge mode, auth-disabled temp config, fresh temporary pgvector database. UI submitted `/mnt/user-data/uploads/edge-final-smoke.txt`, Gateway returned `202`, durable worker completed `SUCCEEDED`, Sources/Activity persisted state after refresh, Search returned the ingested evidence through the formal Gateway endpoint, and Knowledge pages navigated in desktop/narrow viewport.
+- Final frontend full unit suite: `npx pnpm@10.26.2 test` -> `339 passed`.
+- Final frontend typecheck: `npx pnpm@10.26.2 typecheck` -> passed.
+- Final frontend lint: `npx pnpm@10.26.2 lint` -> passed.
+- Final frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Final frontend demo/static build: `NEXT_PUBLIC_STATIC_WEBSITE_ONLY=true NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=true npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Final backend Knowledge suite: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped, 1 warning`.
+- Final backend lint: `make lint` -> passed.
+- Final backend full test: `make test` -> `4555 passed, 32 skipped, 11 warnings`.
 
 ## 11. Known Boundaries
 
@@ -133,7 +149,7 @@ Actual migration files:
 
 ## 12. Unverified Items
 
-No remaining item is known for the local ingestion/SSE/source-detail/search, Workflow/Artifact, or Approval/Fake Action vertical slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL tests, frontend typecheck, frontend lint, production build, and local Edge browser smoke passed.
+No remaining item is known for the local ingestion/SSE/source-detail/search, analysis, revision/conflict, Workflow/Artifact, or Approval/Fake Action vertical slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL tests, frontend typecheck, frontend lint, production build, demo/static build, and local Edge browser smoke passed.
 
 ## 13. Current Working Tree State
 
@@ -141,7 +157,7 @@ Expected after this integration commit: clean worktree on `feat/knowledge-fullst
 
 ## 14. Next Stage
 
-Next Frontend-Backend Integration slice: analysis result retrieval, graph, revision diff, conflict decisions, artifact export/download formats, per-step workflow controls if needed, real connector dispatch/reconciliation resolution, and remaining production UI panels.
+Evaluation / Security / E2E Hardening. Keep real Gmail, Calendar, third-party task, external export, and model-backed connector dispatch out of scope until that stage explicitly designs and verifies connector security.
 
 ## 15. Allowed Scope for Next Stage
 

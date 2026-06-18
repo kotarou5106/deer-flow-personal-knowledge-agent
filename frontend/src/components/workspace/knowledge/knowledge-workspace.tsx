@@ -450,8 +450,8 @@ function ProductionSearchView({ onOpenCitation }: { onOpenCitation: (citation: K
       ) : searchQuery.isLoading ? <Skeleton className="h-48" /> : !submittedQuery ? <EmptyState title="Enter a query to search production knowledge" /> : (
         <div className="grid gap-3">
           <div className="text-sm text-muted-foreground">{formatKnowledgeCount(results.length, "result")}</div>
-          {results.length === 0 ? <EmptyState title="No evidence matched the query" /> : results.map((result) => (
-            <Card key={result.id}>
+          {results.length === 0 ? <EmptyState title="No evidence matched the query" /> : results.map((result, index) => (
+            <Card key={`${result.id}-${index}`}>
               <CardHeader><CardTitle>{result.title}</CardTitle><CardDescription>{result.retrievalChannels.join(" / ") || "Gateway retrieval"}</CardDescription></CardHeader>
               <CardContent className="space-y-3">
                 <p>{result.snippet}</p>
@@ -1117,6 +1117,8 @@ function mapRetrievalChannels(channel: string): SearchResult["retrievalChannels"
 function OverviewView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
   const stats = overviewStats(dataset);
   const distribution = sourceTypeDistribution(dataset.sources);
+  const latestArtifact = dataset.artifacts[0];
+  const latestConflict = dataset.conflicts[0];
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1141,9 +1143,9 @@ function OverviewView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspace
             <CardDescription>Latest artifact, pending approval, and unresolved conflict.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <ArtifactSummary artifact={dataset.artifacts[0]!} onOpenCitation={onOpenCitation} dataset={dataset} />
+            {latestArtifact ? <ArtifactSummary artifact={latestArtifact} onOpenCitation={onOpenCitation} dataset={dataset} /> : <EmptyState title="No artifacts yet" />}
             <Separator />
-            <ConflictSummary conflict={dataset.conflicts[0]!} dataset={dataset} onOpenCitation={onOpenCitation} />
+            {latestConflict ? <ConflictSummary conflict={latestConflict} dataset={dataset} onOpenCitation={onOpenCitation} /> : <EmptyState title="No unresolved conflicts" />}
           </CardContent>
         </Card>
       </div>
