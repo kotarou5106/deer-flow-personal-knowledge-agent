@@ -1,0 +1,198 @@
+{
+  "suite_version": "2026-06-18",
+  "commit": "f9d193b0",
+  "timestamp": "2026-06-18T08:59:59+00:00",
+  "environment": {
+    "python": "3.12+",
+    "database": "not_required_for_fixture_evaluation",
+    "external_network": "disabled",
+    "model_provider": "deterministic_fixture"
+  },
+  "datasets": {
+    "retrieval_cases": 2,
+    "citation_cases": 1,
+    "analysis_cases": 1,
+    "revision_conflict_cases": 6,
+    "workflow_artifact_cases": 1,
+    "approval_action_cases": 1,
+    "security_adversarial_cases": 5
+  },
+  "metrics": {
+    "retrieval": {
+      "cases": [
+        {
+          "case_id": "retrieval-lexical-vector-rrf",
+          "channels": [
+            "lexical",
+            "vector",
+            "rrf"
+          ],
+          "recall_at_k": 1.0,
+          "precision_at_k": 0.3333333333333333,
+          "mrr": 1.0,
+          "citation_hit_rate": 1.0,
+          "workspace_isolated": true,
+          "parent_expansion_direct_evidence_only": true
+        },
+        {
+          "case_id": "retrieval-graph-parent-expansion",
+          "channels": [
+            "graph",
+            "parent_expansion",
+            "rrf"
+          ],
+          "recall_at_k": 1.0,
+          "precision_at_k": 0.5,
+          "mrr": 0.5,
+          "citation_hit_rate": 1.0,
+          "workspace_isolated": true,
+          "parent_expansion_direct_evidence_only": true
+        }
+      ],
+      "aggregate": {
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.41666666666666663,
+        "mrr": 0.75,
+        "citation_hit_rate": 1.0
+      }
+    },
+    "citation_integrity": {
+      "cases": [
+        {
+          "case_id": "citation-supported-facts-exact-offsets",
+          "coverage": 1.0,
+          "precision": 1.0,
+          "offset_exactness": 1.0,
+          "passed": true
+        }
+      ],
+      "aggregate": {
+        "coverage": 1.0,
+        "precision": 1.0,
+        "offset_exactness": 1.0
+      }
+    },
+    "analysis": {
+      "cases": [
+        {
+          "case_id": "analysis-classification-deterministic",
+          "classification_accuracy": 1.0,
+          "unsupported_assertion_rate": 0.25,
+          "citation_backed_fact_rate": 1.0,
+          "passed": true
+        }
+      ],
+      "aggregate": {
+        "classification_accuracy": 1.0,
+        "unsupported_assertion_rate": 0.25,
+        "citation_backed_fact_rate": 1.0
+      }
+    },
+    "revision_conflict": {
+      "cases": [
+        {
+          "case_id": "revision-all-change-types-direct-contradiction",
+          "passed": true
+        },
+        {
+          "case_id": "revision-temporal-source-scope-possible-insufficient",
+          "passed": true
+        },
+        {
+          "case_id": "revision-source-disagreement",
+          "passed": true
+        },
+        {
+          "case_id": "revision-scope-or-condition-difference",
+          "passed": true
+        },
+        {
+          "case_id": "revision-possible-conflict",
+          "passed": true
+        },
+        {
+          "case_id": "revision-insufficient-evidence",
+          "passed": true
+        }
+      ],
+      "aggregate": {
+        "case_accuracy": 1.0
+      }
+    },
+    "workflow_artifact": {
+      "cases": [
+        {
+          "case_id": "workflow-state-artifact-invariants",
+          "passed": true,
+          "failed_assertions": []
+        }
+      ],
+      "aggregate": {
+        "pass_rate": 1.0,
+        "failed_case_ids": []
+      }
+    },
+    "approval_action": {
+      "cases": [
+        {
+          "case_id": "approval-action-invariants",
+          "passed": true,
+          "failed_assertions": []
+        }
+      ],
+      "aggregate": {
+        "pass_rate": 1.0,
+        "failed_case_ids": []
+      }
+    },
+    "security_adversarial": {
+      "cases": [
+        {
+          "case_id": "prompt-injection-documents-remain-untrusted",
+          "passed": true,
+          "failed_assertions": []
+        },
+        {
+          "case_id": "ssrf-url-boundaries",
+          "passed": true,
+          "failed_assertions": []
+        },
+        {
+          "case_id": "file-upload-boundaries",
+          "passed": true,
+          "failed_assertions": []
+        },
+        {
+          "case_id": "auth-csrf-idor-mass-assignment",
+          "passed": true,
+          "failed_assertions": []
+        },
+        {
+          "case_id": "xss-rendering-boundaries",
+          "passed": true,
+          "failed_assertions": []
+        }
+      ],
+      "aggregate": {
+        "pass_rate": 1.0,
+        "failed_case_ids": []
+      }
+    },
+    "performance_baseline": {
+      "max_evaluation_runtime_ms": 500,
+      "retrieval_p95_ms": 150,
+      "status": "baseline_recorded_not_benchmarked"
+    }
+  },
+  "cases_passed": 17,
+  "cases_failed": 0,
+  "warnings": [
+    "Performance numbers are fixture baselines, not live benchmarks."
+  ],
+  "security_findings": [],
+  "residual_risks": [
+    "Fixture evaluation is deterministic and does not replace future real-model quality evaluation with gold human labels.",
+    "External Gmail, Calendar, task, export, and model connector security remains future scope because those connectors are intentionally not integrated.",
+    "Performance entries are small local baselines, not production load-test results."
+  ]
+}

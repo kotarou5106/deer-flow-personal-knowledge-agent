@@ -2,7 +2,7 @@
 
 ## 1. Repository
 
-`/Users/Apple/Downloads/deer-flow-personal-knowledge-agent`
+`<local-workspace>/deer-flow-personal-knowledge-agent`
 
 ## 2. Last Updated Date
 
@@ -10,7 +10,7 @@
 
 ## 3. Branch at Last Update
 
-`feat/knowledge-fullstack-integration`
+`feat/knowledge-evaluation-security-e2e`
 
 ## 4. Base Commit / Recent Commits
 
@@ -139,6 +139,25 @@ Actual migration files:
 - Final backend Knowledge suite: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped, 1 warning`.
 - Final backend lint: `make lint` -> passed.
 - Final backend full test: `make test` -> `4555 passed, 32 skipped, 11 warnings`.
+- Evaluation/Security focused backend: `uv run pytest tests/knowledge/test_evaluation_harness.py tests/knowledge/test_security_adversarial.py -q` -> `7 passed, 1 warning`.
+- Evaluation report generation: `uv run python scripts/run_personal_knowledge_evaluation.py` -> generated `artifacts/personal-knowledge-agent-evaluation.json` and `artifacts/personal-knowledge-agent-evaluation.md`.
+- Evaluation report secret/path scan: `uv run python` check over both artifacts -> no PostgreSQL connection URLs, password, token/cookie assignment, or local private path matches.
+- Evaluation/Security Knowledge suite: `uv run pytest tests/knowledge -q` -> `119 passed, 16 skipped, 1 warning`.
+- Evaluation/Security frontend Knowledge client focused suite: `npx pnpm@10.26.2 --dir frontend test -- tests/unit/core/knowledge/client.test.ts` -> `339 passed`.
+- Evaluation/Security frontend full unit suite: `npx pnpm@10.26.2 --dir frontend test` -> `339 passed`.
+- Evaluation/Security frontend lint: `npx pnpm@10.26.2 --dir frontend lint` -> passed.
+- Evaluation/Security backend lint: `make -C backend lint` -> passed.
+- Evaluation/Security backend full test: `make -C backend test` -> `4562 passed, 32 skipped, 11 warnings`.
+- Evaluation/Security live PostgreSQL Gateway security check: `PYTHONPATH=. PKA_LIVE_SECURITY_DATABASE_URL=... uv run pytest /tmp/pka_live_security_check.py -q` -> `1 passed, 1 warning`.
+- Evaluation/Security Microsoft Edge malicious rendering smoke: `node /tmp/pka_edge_xss_smoke.mjs` -> passed; Source, Analysis, Artifact Markdown, Citation, and Action Preview payloads did not execute `<script>`, event attributes, or `javascript:` URLs.
+- Evaluation/Security final focused backend after formatting: `uv run pytest tests/knowledge/test_evaluation_harness.py tests/knowledge/test_security_adversarial.py tests/knowledge/test_gateway_jobs.py -q` -> `42 passed, 1 warning`.
+- Evaluation/Security final Knowledge suite: `uv run pytest tests/knowledge -q` -> `120 passed, 16 skipped, 1 warning`.
+- Evaluation/Security final frontend unit suite: `npx pnpm@10.26.2 --dir frontend test` -> `339 passed`.
+- Evaluation/Security final frontend typecheck: `npx pnpm@10.26.2 --dir frontend typecheck` -> passed.
+- Evaluation/Security final frontend lint: `npx pnpm@10.26.2 --dir frontend lint` -> passed.
+- Evaluation/Security final frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 --dir frontend build` -> passed with the existing Turbopack NFT trace warning and localstorage-file warnings.
+- Evaluation/Security final backend lint: `make -C backend lint` -> passed.
+- Evaluation/Security final backend full test: `make -C backend test` -> `4563 passed, 32 skipped, 11 warnings`.
 
 ## 11. Known Boundaries
 
@@ -149,21 +168,40 @@ Actual migration files:
 
 ## 12. Unverified Items
 
-No remaining item is known for the local ingestion/SSE/source-detail/search, analysis, revision/conflict, Workflow/Artifact, or Approval/Fake Action vertical slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL tests, frontend typecheck, frontend lint, production build, demo/static build, and local Edge browser smoke passed.
+No remaining item is known for the local ingestion/SSE/source-detail/search, analysis, revision/conflict, Workflow/Artifact, Approval/Fake Action, fixture evaluation, threat-model mapping, adversarial security test, live PostgreSQL security, or malicious browser rendering smoke slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL security check, Microsoft Edge malicious rendering smoke, frontend unit/typecheck/lint/build, and the current Evaluation/Security suites passed.
+
+Current fixture evaluation is deterministic and is not a substitute for future real-model quality evaluation against human-labeled gold data. Real Gmail, Calendar, third-party task, external export, and model-backed connector security remain future scope because those connectors are intentionally not integrated.
 
 ## 13. Current Working Tree State
 
-Expected after this integration commit: clean worktree on `feat/knowledge-fullstack-integration` after push. Temporary pgvector, temp config, and local dev servers should be removed before handoff completion.
+Expected after this evaluation/security slice: clean worktree on `feat/knowledge-evaluation-security-e2e` after the two requested commits and push. Temporary pgvector container, temporary volume, Edge profile, and `/tmp` smoke scripts should be removed before handoff completion.
 
-## 14. Next Stage
+## 14. Current Stage
 
-Evaluation / Security / E2E Hardening. Keep real Gmail, Calendar, third-party task, external export, and model-backed connector dispatch out of scope until that stage explicitly designs and verifies connector security.
+Evaluation / Security / E2E Hardening is implemented as a deterministic fixture suite plus focused adversarial regression tests. It adds:
 
-## 15. Allowed Scope for Next Stage
+- `docs/personal-knowledge-agent/security-threat-model.md`
+- `docs/personal-knowledge-agent/evaluation.md`
+- `docs/personal-knowledge-agent/security-test-results.md`
+- `backend/packages/harness/deerflow/knowledge/evaluation.py`
+- `backend/tests/fixtures/knowledge/evaluation_dataset.json`
+- `backend/scripts/run_personal_knowledge_evaluation.py`
+- `backend/tests/knowledge/test_evaluation_harness.py`
+- `backend/tests/knowledge/test_security_adversarial.py`
+- `artifacts/personal-knowledge-agent-evaluation.json`
+- `artifacts/personal-knowledge-agent-evaluation.md`
+
+The stage also hardens Knowledge mass-assignment rejection for server-managed `owner_id`, `approval_status`, `execution_status`, and `payload_hash` fields in Gateway schemas and the frontend Knowledge client.
+
+## 15. Next Stage
+
+E2E/browser hardening against malicious rendered Knowledge content, plus future connector security design. Keep real Gmail, Calendar, third-party task, external export, and model-backed connector dispatch out of scope until that stage explicitly designs and verifies connector security.
+
+## 16. Allowed Scope for Next Stage
 
 Wire the completed Workspace UI to live Gateway contracts. Do not reimplement the Workspace UI, Frontend Foundation, backend domains, migrations, provider assembly, job worker semantics, auth, CSRF, workspace isolation, or completed Knowledge modules unless a verified bug requires a focused fix.
 
-## 16. Modules That Must Not Be Reimplemented
+## 17. Modules That Must Not Be Reimplemented
 
 - `backend/packages/harness/deerflow/knowledge/`
 - `backend/packages/harness/deerflow/persistence/migrations/versions/20260616_0001_knowledge_persistence.py`
@@ -176,7 +214,7 @@ Wire the completed Workspace UI to live Gateway contracts. Do not reimplement th
 - `backend/app/gateway/deps.py` Knowledge trusted context integration
 - `backend/packages/harness/deerflow/tools/builtins/knowledge_tools.py`
 
-## 17. Required Startup Audit Commands
+## 18. Required Startup Audit Commands
 
 ```bash
 git branch --show-current
@@ -188,7 +226,7 @@ uv run alembic \
   heads
 ```
 
-## 18. Security Constraints
+## 19. Security Constraints
 
 - Do not commit `.env`, runtime secrets, database passwords, tokens, cookies, or temporary test configs.
 - Do not print full database connection strings in user-facing reports.
