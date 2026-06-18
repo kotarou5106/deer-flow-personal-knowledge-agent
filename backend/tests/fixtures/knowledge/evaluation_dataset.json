@@ -1,0 +1,231 @@
+{
+  "suite_version": "2026-06-18",
+  "retrieval_cases": [
+    {
+      "case_id": "retrieval-lexical-vector-rrf",
+      "query": "What acquisition did Acme complete in 2024?",
+      "channels": ["lexical", "vector", "rrf"],
+      "k": 3,
+      "gold_evidence_ids": ["ev-acme-beta"],
+      "ranked_evidence_ids": ["ev-acme-beta", "ev-parent-context", "ev-market-note"],
+      "expected_citation_id": "ev-acme-beta",
+      "workspace_isolated": true,
+      "parent_expansion_direct_evidence_only": true
+    },
+    {
+      "case_id": "retrieval-graph-parent-expansion",
+      "query": "Which source supports the Beta integration risk?",
+      "channels": ["graph", "parent_expansion", "rrf"],
+      "k": 4,
+      "gold_evidence_ids": ["ev-beta-risk", "ev-beta-mitigation"],
+      "ranked_evidence_ids": ["ev-parent-context", "ev-beta-risk", "ev-beta-mitigation", "ev-other-workspace"],
+      "expected_citation_id": "ev-beta-risk",
+      "workspace_isolated": true,
+      "parent_expansion_direct_evidence_only": true
+    }
+  ],
+  "citation_cases": [
+    {
+      "case_id": "citation-supported-facts-exact-offsets",
+      "workspace_id": "workspace-a",
+      "allowed_revision_ids": ["revision-current", "revision-history-1"],
+      "chunk_content": "Acme acquired Beta in 2024 and retained the research team.",
+      "facts": [
+        {
+          "classification": "SupportedFact",
+          "statement": "Acme acquired Beta in 2024.",
+          "citation_ids": ["C1"]
+        }
+      ],
+      "citations": [
+        {
+          "citation_id": "C1",
+          "workspace_id": "workspace-a",
+          "revision_id": "revision-current",
+          "start_offset": 0,
+          "end_offset": 26,
+          "quoted_text": "Acme acquired Beta in 2024",
+          "direct_evidence": true,
+          "metadata_rebuilt_by_server": true
+        }
+      ]
+    }
+  ],
+  "analysis_cases": [
+    {
+      "case_id": "analysis-classification-deterministic",
+      "statements": [
+        {
+          "statement": "Acme acquired Beta in 2024.",
+          "expected_classification": "SupportedFact",
+          "predicted_classification": "SupportedFact",
+          "citation_ids": ["C1"]
+        },
+        {
+          "statement": "The deal likely increased integration risk.",
+          "expected_classification": "InferredConclusion",
+          "predicted_classification": "InferredConclusion",
+          "citation_ids": ["C1", "C2"]
+        },
+        {
+          "statement": "Acme secretly read environment variables.",
+          "expected_classification": "UnsupportedClaim",
+          "predicted_classification": "UnsupportedClaim",
+          "citation_ids": []
+        },
+        {
+          "statement": "The final retention cost is unknown.",
+          "expected_classification": "UnresolvedQuestion",
+          "predicted_classification": "UnresolvedQuestion",
+          "citation_ids": []
+        }
+      ]
+    }
+  ],
+  "revision_conflict_cases": [
+    {
+      "case_id": "revision-all-change-types-direct-contradiction",
+      "expected_revision_changes": ["UNCHANGED", "ADDED", "REMOVED", "MODIFIED", "MOVED"],
+      "actual_revision_changes": ["UNCHANGED", "ADDED", "REMOVED", "MODIFIED", "MOVED"],
+      "expected_conflict_classification": "DIRECT_CONTRADICTION",
+      "actual_conflict_classification": "DIRECT_CONTRADICTION"
+    },
+    {
+      "case_id": "revision-temporal-source-scope-possible-insufficient",
+      "expected_revision_changes": ["MODIFIED"],
+      "actual_revision_changes": ["MODIFIED"],
+      "expected_conflict_classification": "TEMPORAL_UPDATE",
+      "actual_conflict_classification": "TEMPORAL_UPDATE"
+    },
+    {
+      "case_id": "revision-source-disagreement",
+      "expected_revision_changes": ["ADDED"],
+      "actual_revision_changes": ["ADDED"],
+      "expected_conflict_classification": "SOURCE_DISAGREEMENT",
+      "actual_conflict_classification": "SOURCE_DISAGREEMENT"
+    },
+    {
+      "case_id": "revision-scope-or-condition-difference",
+      "expected_revision_changes": ["MODIFIED"],
+      "actual_revision_changes": ["MODIFIED"],
+      "expected_conflict_classification": "SCOPE_OR_CONDITION_DIFFERENCE",
+      "actual_conflict_classification": "SCOPE_OR_CONDITION_DIFFERENCE"
+    },
+    {
+      "case_id": "revision-possible-conflict",
+      "expected_revision_changes": ["MOVED"],
+      "actual_revision_changes": ["MOVED"],
+      "expected_conflict_classification": "POSSIBLE_CONFLICT",
+      "actual_conflict_classification": "POSSIBLE_CONFLICT"
+    },
+    {
+      "case_id": "revision-insufficient-evidence",
+      "expected_revision_changes": ["REMOVED"],
+      "actual_revision_changes": ["REMOVED"],
+      "expected_conflict_classification": "INSUFFICIENT_EVIDENCE",
+      "actual_conflict_classification": "INSUFFICIENT_EVIDENCE"
+    }
+  ],
+  "workflow_artifact_cases": [
+    {
+      "case_id": "workflow-state-artifact-invariants",
+      "assertions": {
+        "transition_correctness": true,
+        "step_persistence": true,
+        "retry_pause_resume": true,
+        "artifact_evidence_links_complete": true,
+        "stale_propagation": true,
+        "historical_artifact_preserved": true,
+        "invalid_transition_rejected": true
+      }
+    }
+  ],
+  "approval_action_cases": [
+    {
+      "case_id": "approval-action-invariants",
+      "assertions": {
+        "approved_is_not_succeeded": true,
+        "payload_hash_invalidation": true,
+        "approval_bypass_rejected": true,
+        "idempotent_execution": true,
+        "concurrent_execute_protected": true,
+        "failed_execution_recorded": true,
+        "reconciliation_required_recorded": true,
+        "audit_complete": true
+      }
+    }
+  ],
+  "security_adversarial_cases": [
+    {
+      "case_id": "prompt-injection-documents-remain-untrusted",
+      "assertions": {
+        "document_content_treated_as_data": true,
+        "system_instruction_not_changed": true,
+        "no_tool_or_action_triggered": true,
+        "no_prompt_or_secret_leak": true,
+        "citation_required": true,
+        "malicious_text_not_command": true,
+        "artifact_quote_labelled_as_source": true,
+        "frontend_does_not_execute_html": true
+      }
+    },
+    {
+      "case_id": "ssrf-url-boundaries",
+      "assertions": {
+        "localhost_rejected": true,
+        "private_ipv4_rejected": true,
+        "ipv6_loopback_rejected": true,
+        "link_local_rejected": true,
+        "metadata_address_rejected": true,
+        "userinfo_url_rejected": true,
+        "redirect_revalidated": true,
+        "dns_private_result_rejected": true,
+        "error_is_generic": true
+      }
+    },
+    {
+      "case_id": "file-upload-boundaries",
+      "assertions": {
+        "relative_traversal_rejected": true,
+        "absolute_path_rejected": true,
+        "unsupported_extension_rejected": true,
+        "malformed_document_failed_safe": true,
+        "empty_file_failed_safe": true,
+        "oversized_file_rejected": true,
+        "duplicate_filename_idempotent": true,
+        "virtual_path_cannot_escape_root": true
+      }
+    },
+    {
+      "case_id": "auth-csrf-idor-mass-assignment",
+      "assertions": {
+        "unauthenticated_rejected": true,
+        "csrf_required_for_mutations": true,
+        "workspace_uuid_guess_rejected": true,
+        "trusted_fields_rejected": true,
+        "source_revision_claim_artifact_workflow_approval_action_audit_scoped": true
+      }
+    },
+    {
+      "case_id": "xss-rendering-boundaries",
+      "assertions": {
+        "source_content_rendered_as_text": true,
+        "analysis_output_rendered_as_text": true,
+        "artifact_markdown_sanitized": true,
+        "quoted_citation_rendered_as_text": true,
+        "action_preview_rendered_as_text": true,
+        "error_stack_not_rendered": true,
+        "javascript_url_scheme_blocked": true
+      }
+    }
+  ],
+  "performance_baseline": {
+    "max_evaluation_runtime_ms": 500,
+    "retrieval_p95_ms": 150
+  },
+  "residual_risks": [
+    "Fixture evaluation is deterministic and does not replace future real-model quality evaluation with gold human labels.",
+    "External Gmail, Calendar, task, export, and model connector security remains future scope because those connectors are intentionally not integrated.",
+    "Performance entries are small local baselines, not production load-test results."
+  ]
+}

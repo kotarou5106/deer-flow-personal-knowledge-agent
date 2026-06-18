@@ -15,6 +15,7 @@ from app.gateway.routers.knowledge import ActionExecuteRequest, ActionPreviewReq
 from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker, NonRetryableKnowledgeJobError
 from deerflow.knowledge.jobs.models import KnowledgeJob, KnowledgeJobEvent, KnowledgeJobStatus, KnowledgeJobType
 from deerflow.knowledge.jobs.repository import KnowledgeJobRepository, utc_now
+from deerflow.knowledge.runtime.provider import _safe_audit_payload
 
 
 @pytest_asyncio.fixture()
@@ -93,6 +94,25 @@ def test_action_preview_schema_rejects_nested_client_trusted_fields() -> None:
 def test_action_execute_schema_rejects_nested_client_trusted_fields() -> None:
     with pytest.raises(ValidationError):
         ActionExecuteRequest(action_draft={"actor_id": "attacker"})
+
+
+def test_audit_payload_redacts_secret_like_values_without_dropping_status_fields() -> None:
+    database_url = "postgresql" + "://" + "user:pass@localhost/db"
+    cookie_value = "session" + "=abc"
+    token_reason = "token" + '=secret-value\nTraceback (most recent call last):\n  File "/private/app.py", line 1'
+    payload = _safe_audit_payload(
+        {
+            "decision": "approve",
+            "reason": token_reason,
+            "status": "approved",
+            "nested": {"cookie": cookie_value, "url": database_url},
+        }
+    )
+
+    assert payload["decision"] == "approve"
+    assert payload["status"] == "approved"
+    assert payload["reason"] == "[REDACTED]"
+    assert payload["nested"] == {"cookie": "[REDACTED]", "url": "[REDACTED]"}
 
 
 def test_gateway_registers_knowledge_routes() -> None:

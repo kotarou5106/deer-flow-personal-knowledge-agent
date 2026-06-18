@@ -77,4 +77,6 @@ Final unified acceptance is complete. The latest Knowledge Alembic head is `2026
 
 The remaining gaps are product/API scope, not external service requirements. Real Gmail, Calendar, third-party task systems, and model-backed external actions are still not connected. See `frontend-backend-contract-gaps.md` for the detailed contract table.
 
-Next stage: Evaluation / Security / E2E Hardening. All action dispatch in this stage still uses deterministic fake adapters; real Gmail, Calendar, task, and external export connectors remain future scope.
+The Evaluation / Security / E2E Hardening stage has also completed on top of this integration baseline. It verified the unified adversarial local flow with formal Gateway lifespan, durable worker, temporary pgvector PostgreSQL, trusted context, Next production Knowledge mode, Microsoft Edge, deterministic providers, and fake action adapters only. It also closed the nested workflow input mass-assignment gap for trusted/server-managed fields.
+
+Next stage: Deployment / Demo / Product Packaging. All action dispatch still uses deterministic fake adapters; real Gmail, Calendar, task, external export, and model-backed connector dispatch remain future scope.

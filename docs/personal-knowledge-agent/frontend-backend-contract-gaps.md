@@ -2,7 +2,7 @@
 
 The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model, ingestion/search, analysis, revision/conflict, workflow, artifact, approval, and fake action vertical slices are now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
 
-Final Full-stack Integration status: completed. Items in the completed section below are closed for this stage. The table that follows is future product/API scope for Evaluation / Security / E2E Hardening and later connector work.
+Final Full-stack Integration status: completed. Evaluation / Security / E2E Hardening status: completed. Items in the completed section below are closed for these stages. The table that follows is future product/API scope for Deployment / Demo / Product Packaging and later connector work.
 
 ## Completed In This Integration Stage
 
@@ -59,4 +59,4 @@ Knowledge-to-Action is intentionally draft-first. Approval and fake action execu
 | Approvals | Rich reconciliation resolution workflow | action execution model records `RECONCILIATION_REQUIRED` | Resolution mutation intentionally absent | `POST /api/knowledge/actions/executions/{id}/reconcile` with audit record | Medium |
 | Activity | Unified audit/activity log beyond source/job events | audit route exists for target-specific history | Activity route still jobs/source-focused | Cursor-paginated unified activity stream with safe summaries | Medium |
 
-Next stage: add the remaining contracts in focused backend slices and then switch the corresponding production UI panels from unavailable/partial to Gateway-backed data.
+Next stage: Deployment / Demo / Product Packaging. Keep the remaining contracts in focused future backend slices before switching corresponding production UI panels from unavailable/partial to Gateway-backed data.

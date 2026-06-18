@@ -48,7 +48,9 @@ describe("Knowledge client", () => {
     });
     const client = createKnowledgeClient(transport);
 
-    await expect(client.createAnalysis({ query: "What changed?", context_budget: 5000 })).resolves.toMatchObject({
+    await expect(
+      client.createAnalysis({ query: "What changed?", context_budget: 5000 }),
+    ).resolves.toMatchObject({
       model_identity: "deterministic-analysis",
     });
     expect(transport.request).toHaveBeenCalledWith(
@@ -122,7 +124,9 @@ describe("Knowledge client", () => {
     });
     const client = createKnowledgeClient(transport);
 
-    await expect(client.listWorkflows({ limit: 20, offset: 3 })).resolves.toMatchObject({
+    await expect(
+      client.listWorkflows({ limit: 20, offset: 3 }),
+    ).resolves.toMatchObject({
       data: [],
     });
     expect(transport.request).toHaveBeenCalledWith(
@@ -191,7 +195,7 @@ describe("Knowledge client", () => {
 
     await expect(
       client.executeAction("approval-1", {
-        action_draft: { actor_id: "actor-1" },
+        action_draft: { payload: { payload_hash: "forged" } },
       }),
     ).rejects.toThrow("trusted field");
   });
