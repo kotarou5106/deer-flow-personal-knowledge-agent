@@ -277,18 +277,19 @@ export function createKnowledgeClient(
     },
     async createWorkflow(input: WorkflowCreateInput, options) {
       assertNoTrustedFields(input.input ?? {});
-      const raw = await transport.request({
-        method: "POST",
-        path: "/workflows",
-        body: {
-          workflow_type: input.workflow_type,
-          input: input.input ?? {},
-          idempotency_key: input.idempotency_key ?? null,
-        },
-        ...options,
-      });
-      const accepted = knowledgeJobAcceptedSchema.safeParse(raw);
-      return accepted.success ? accepted.data : parseResponse(unknownRecordSchema, raw);
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/workflows",
+          body: {
+            workflow_type: input.workflow_type,
+            input: input.input ?? {},
+            idempotency_key: input.idempotency_key ?? null,
+          },
+          ...options,
+        }),
+      );
     },
     async listWorkflows(params, options) {
       return parseResponse(
@@ -313,10 +314,51 @@ export function createKnowledgeClient(
     },
     async advanceWorkflow(workflowRunId, options) {
       return parseResponse(
-        knowledgeJobAcceptedSchema,
+        unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: `/workflows/${encodeURIComponent(workflowRunId)}/advance`,
+          ...options,
+        }),
+      );
+    },
+    async pauseWorkflow(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/pause`,
+          ...options,
+        }),
+      );
+    },
+    async resumeWorkflow(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/resume`,
+          ...options,
+        }),
+      );
+    },
+    async retryWorkflow(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/retry`,
+          ...options,
+        }),
+      );
+    },
+    async generateWorkflowArtifact(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/artifacts`,
+          body: {},
           ...options,
         }),
       );
@@ -338,6 +380,16 @@ export function createKnowledgeClient(
         await transport.request({
           method: "GET",
           path: `/artifacts/${encodeURIComponent(artifactId)}`,
+          ...options,
+        }),
+      );
+    },
+    async listArtifactEvidenceLinks(artifactId, options) {
+      return parseResponse(
+        unknownListEnvelopeSchema,
+        await transport.request({
+          method: "GET",
+          path: `/artifacts/${encodeURIComponent(artifactId)}/evidence-links`,
           ...options,
         }),
       );

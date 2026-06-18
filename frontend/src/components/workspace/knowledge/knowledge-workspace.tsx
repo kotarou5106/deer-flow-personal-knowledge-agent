@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ActivityIcon,
   AlertTriangleIcon,
@@ -300,6 +300,7 @@ function ProductionGatewayView({
   onOpenCitation: (citation: KnowledgeCitation) => void;
 }) {
   const client = useKnowledgeClient();
+  const [reloadToken, setReloadToken] = useState(0);
   const [datasetState, setDatasetState] = useState<{
     loading: boolean;
     error: Error | null;
@@ -329,6 +330,12 @@ function ProductionGatewayView({
             ? client.getSourceDetail(sourceId, { signal: controller.signal }).catch(() => undefined)
             : Promise.resolve(undefined),
         ]);
+        const artifactDetails = await Promise.all(
+          (artifactsEnvelope?.data ?? []).map((artifact) => {
+            const artifactId = readString(artifact, "artifact_id", "id");
+            return artifactId ? client.getArtifact(artifactId, { signal: controller.signal }).catch(() => artifact) : Promise.resolve(artifact);
+          }),
+        );
         const revisions = sourceDetail ? sortRevisionRows(readArray(sourceDetail, "revisions")) : [];
         const latestRevision = revisions[0];
         const previousRevision = revisions[1];
@@ -354,7 +361,7 @@ function ProductionGatewayView({
               claims,
               conflicts,
               workflowsEnvelope,
-              artifactsEnvelope,
+              artifactsEnvelope: artifactsEnvelope ? { ...artifactsEnvelope, data: artifactDetails } : undefined,
               approvalsEnvelope,
             }),
           });
@@ -375,7 +382,7 @@ function ProductionGatewayView({
       cancelled = true;
       controller.abort();
     };
-  }, [client, sourceId, view]);
+  }, [client, reloadToken, sourceId, view]);
 
   if (view === "search") {
     return <ProductionSearchView onOpenCitation={onOpenCitation} />;
@@ -405,7 +412,7 @@ function ProductionGatewayView({
   if (view === "sources") return <SourcesView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "source-detail") return <SourceDetailView dataset={dataset} sourceId={sourceId} onOpenCitation={onOpenCitation} />;
   if (view === "conflicts") return <ConflictsView dataset={dataset} onOpenCitation={onOpenCitation} />;
-  if (view === "workflows") return <WorkflowsView dataset={dataset} demoMode={false} />;
+  if (view === "workflows") return <WorkflowsView dataset={dataset} demoMode={false} onRefresh={() => setReloadToken((value) => value + 1)} />;
   if (view === "artifacts") return <ArtifactsView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "approvals") return <ApprovalsView dataset={dataset} demoMode={false} />;
   return <ActivityView dataset={dataset} />;
@@ -617,6 +624,7 @@ function buildProductionDataset(input: {
   dataset.conflicts = conflictRows.map(mapConflict);
   dataset.workflows = (input.workflowsEnvelope?.data ?? []).map(mapWorkflow);
   dataset.artifacts = (input.artifactsEnvelope?.data ?? []).map(mapArtifact);
+  dataset.citations = mergeById(dataset.citations, (input.artifactsEnvelope?.data ?? []).flatMap(mapArtifactCitations), "citationId");
   dataset.approvals = (input.approvalsEnvelope?.data ?? []).map(mapApproval);
   dataset.activity = [
     ...mapActivity(input.activityEnvelope?.data ?? []),
@@ -886,21 +894,23 @@ function mapConflictCitation(raw: Record<string, unknown>): KnowledgeCitation {
 
 function mapWorkflow(raw: Record<string, unknown>): KnowledgeWorkflow {
   const id = readString(raw, "workflow_run_id", "id");
+  const input = asRecord(raw.input);
+  const outputTitle = readString(input, "decision", "project", "topic", "meeting", "objective", "reading_set");
   return {
     id,
     workflowType: (readString(raw, "workflow_type") as WorkflowType) || "decision_memo",
-    title: readString(raw, "title") || readString(raw, "workflow_type") || id,
+    title: readString(raw, "title") || outputTitle || readString(raw, "workflow_type") || id,
     status: (readString(raw, "status").toUpperCase() as WorkflowStatus) || "PENDING",
     currentStep: readString(raw, "current_step") || undefined,
-    sourceIds: [],
-    artifactIds: [],
+    sourceIds: readStringArray(input, "source_ids"),
+    artifactIds: readStringArray(raw, "artifact_ids"),
     updatedAt: readString(raw, "updated_at", "created_at"),
     steps: readArray(raw, "steps").map((step) => ({
       key: readString(step, "step_key", "key"),
       label: readString(step, "step_key", "key"),
       status: (readString(step, "status").toUpperCase() as WorkflowStatus) || "PENDING",
-      inputSummary: "",
-      outputSummary: readString(asRecord(step.output_payload), "summary"),
+      inputSummary: readString(asRecord(step.input_payload), "summary"),
+      outputSummary: readString(asRecord(step.output_payload), "summary", "output_kind"),
       error: readString(step, "error_message") || undefined,
     })),
   };
@@ -912,6 +922,7 @@ function mapArtifact(raw: Record<string, unknown>): KnowledgeArtifact {
     ? readStringArray(raw, "stale_reasons")
     : readStringArray(metadata, "staleness_reasons");
   const staleStatus = readString(raw, "staleness_status").toUpperCase();
+  const evidenceLinks = readArray(raw, "evidence_links");
   return {
     id: readString(raw, "artifact_id", "id"),
     artifactType: readString(raw, "artifact_type"),
@@ -919,11 +930,30 @@ function mapArtifact(raw: Record<string, unknown>): KnowledgeArtifact {
     validationStatus: readString(raw, "validation_status", "status").toUpperCase() === "INVALID" ? "INVALID" : readString(raw, "validation_status", "status").toUpperCase() === "VALID" ? "VALID" : "PENDING",
     stalenessStatus: staleStatus === "STALE" ? "STALE" : staleStatus === "CURRENT" || staleStatus === "FRESH" ? "CURRENT" : "UNKNOWN",
     createdAt: readString(raw, "created_at"),
-    sourceIds: [],
-    citationIds: [],
+    workflowId: readString(raw, "workflow_run_id") || readString(metadata, "workflow_run_id") || undefined,
+    sourceIds: Array.from(new Set(evidenceLinks.map((link) => readString(link, "source_id")).filter(Boolean))),
+    citationIds: evidenceLinks.map((link) => readString(link, "evidence_span_id", "artifact_evidence_link_id")).filter(Boolean),
     staleReasons,
     markdown: readString(raw, "markdown"),
   };
+}
+
+function mapArtifactCitations(raw: Record<string, unknown>): KnowledgeCitation[] {
+  return readArray(raw, "evidence_links").map((link) => ({
+    citationId: readString(link, "evidence_span_id", "artifact_evidence_link_id"),
+    sourceId: readString(link, "source_id"),
+    revisionId: readString(link, "revision_id"),
+    chunkId: readString(link, "chunk_id"),
+    evidenceSpanId: readString(link, "evidence_span_id"),
+    sourceTitle: readString(link, "source_title"),
+    sourceUri: readString(link, "source_uri"),
+    quotedText: readString(link, "quoted_text", "claim_text"),
+    pageNumber: readNumber(link, "page_number") || undefined,
+    sectionPath: Array.isArray(link.section_path) ? link.section_path.filter((item): item is string => typeof item === "string") : [],
+    startOffset: readNumber(link, "start_offset"),
+    endOffset: readNumber(link, "end_offset"),
+    role: readString(link, "usage_type") === "direct_evidence" ? "direct" : "parent_context",
+  }));
 }
 
 function mapApproval(raw: Record<string, unknown>): KnowledgeApproval {
@@ -1512,8 +1542,36 @@ function ConflictsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
   );
 }
 
-function WorkflowsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean }) {
+function WorkflowsView({ dataset, demoMode = true, onRefresh }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean; onRefresh?: () => void }) {
+  const client = useKnowledgeClient();
   const [type, setType] = useState<WorkflowType>("decision_memo");
+  const [objective, setObjective] = useState("Prepare rollout decision");
+  const mutation = useMutation({
+    mutationFn: async (action: { kind: "create" | "advance" | "pause" | "resume" | "retry" | "artifact"; workflowId?: string }) => {
+      if (demoMode) return {};
+      if (action.kind === "create") {
+        return client.createWorkflow({
+          workflow_type: type,
+          input: workflowInputForType(type, objective, dataset.sources.map((source) => source.id)),
+          idempotency_key: `${type}-${objective.trim().toLowerCase().replace(/\s+/g, "-")}`,
+        });
+      }
+      if (!action.workflowId) throw new Error("Workflow id is required");
+      if (action.kind === "advance") return client.advanceWorkflow(action.workflowId);
+      if (action.kind === "pause") return client.pauseWorkflow(action.workflowId);
+      if (action.kind === "resume") return client.resumeWorkflow(action.workflowId);
+      if (action.kind === "retry") return client.retryWorkflow(action.workflowId);
+      return client.generateWorkflowArtifact(action.workflowId);
+    },
+    onSuccess: (_data, variables) => {
+      toast.success(variables.kind === "artifact" ? "Artifact generated" : variables.kind === "create" ? "Workflow created" : "Workflow updated");
+      onRefresh?.();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Workflow operation failed");
+    },
+  });
+  const busy = mutation.isPending;
   return (
     <div className="grid gap-4 xl:grid-cols-[340px_1fr]">
       <Card>
@@ -1523,13 +1581,13 @@ function WorkflowsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspa
             <SelectTrigger aria-label="Workflow type"><SelectValue /></SelectTrigger>
             <SelectContent>{Object.entries(workflowTypeLabels).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent>
           </Select>
-          <Input aria-label="Workflow objective" defaultValue="Prepare rollout decision" />
-          <Button disabled={!demoMode} onClick={() => toast.success(`${workflowTypeLabels[type]} accepted in demo`)}><PlayIcon className="size-4" /> Create workflow</Button>
+          <Input aria-label="Workflow objective" value={objective} onChange={(event) => setObjective(event.target.value)} />
+          <Button disabled={busy || (!demoMode && objective.trim().length === 0)} onClick={() => demoMode ? toast.success(`${workflowTypeLabels[type]} accepted in demo`) : mutation.mutate({ kind: "create" })}>{busy ? <Loader2Icon className="size-4 animate-spin" /> : <PlayIcon className="size-4" />} Create workflow</Button>
           <p className="text-xs text-muted-foreground">Knowledge-to-Action creates an action draft only. Execution stays behind approval.</p>
         </CardContent>
       </Card>
       <div className="grid gap-4">
-        {dataset.workflows.map((workflow) => (
+        {dataset.workflows.length === 0 ? <EmptyState title="No workflows yet" /> : dataset.workflows.map((workflow) => (
           <Card key={workflow.id}>
             <CardHeader><CardTitle>{workflow.title}</CardTitle><CardDescription>{workflowTypeLabels[workflow.workflowType]} / {formatKnowledgeDate(workflow.updatedAt)}</CardDescription></CardHeader>
             <CardContent className="space-y-3">
@@ -1538,10 +1596,11 @@ function WorkflowsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspa
                 {workflow.steps.map((step) => <WorkflowStepRow key={step.key} step={step} />)}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" disabled={workflow.status === "SUCCEEDED"}><PauseIcon className="size-4" /> Pause</Button>
-                <Button size="sm" variant="outline" disabled={workflow.status !== "PAUSED"}><PlayIcon className="size-4" /> Resume</Button>
-                <Button size="sm" variant="outline"><RefreshCwIcon className="size-4" /> Retry</Button>
-                <Button size="sm" variant="outline" disabled>Generate artifact</Button>
+                <Button size="sm" variant="outline" disabled={busy || isTerminalWorkflowStatus(workflow.status) || workflow.status === "PAUSED" || workflow.status === "REQUIRES_APPROVAL"} onClick={() => mutation.mutate({ kind: "advance", workflowId: workflow.id })}><PlayIcon className="size-4" /> Advance</Button>
+                <Button size="sm" variant="outline" disabled={busy || workflow.status !== "RUNNING"} onClick={() => mutation.mutate({ kind: "pause", workflowId: workflow.id })}><PauseIcon className="size-4" /> Pause</Button>
+                <Button size="sm" variant="outline" disabled={busy || workflow.status !== "PAUSED"} onClick={() => mutation.mutate({ kind: "resume", workflowId: workflow.id })}><PlayIcon className="size-4" /> Resume</Button>
+                <Button size="sm" variant="outline" disabled={busy || !workflow.steps.some((step) => step.status === "FAILED")} onClick={() => mutation.mutate({ kind: "retry", workflowId: workflow.id })}><RefreshCwIcon className="size-4" /> Retry</Button>
+                <Button size="sm" variant="outline" disabled={busy || !["COMPLETED", "SUCCEEDED"].includes(workflow.status)} onClick={() => mutation.mutate({ kind: "artifact", workflowId: workflow.id })}>Generate artifact</Button>
               </div>
             </CardContent>
           </Card>
@@ -1549,6 +1608,21 @@ function WorkflowsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspa
       </div>
     </div>
   );
+}
+
+function workflowInputForType(type: WorkflowType, objective: string, sourceIds: string[]): Record<string, unknown> {
+  const base = { source_ids: sourceIds };
+  if (type === "project_context_pack") return { ...base, project: objective };
+  if (type === "topic_dossier") return { ...base, topic: objective };
+  if (type === "reading_synthesis") return { ...base, reading_set: objective };
+  if (type === "meeting_preparation") return { ...base, meeting: objective };
+  if (type === "knowledge_update_review") return { source_id: sourceIds[0] ?? "pending-source", old_revision_id: "pending-old-revision", new_revision_id: "pending-new-revision" };
+  if (type === "knowledge_to_action") return { ...base, objective, risk_level: "low" };
+  return { ...base, decision: objective, options: ["Proceed", "Wait"] };
+}
+
+function isTerminalWorkflowStatus(status: WorkflowStatus) {
+  return ["COMPLETED", "SUCCEEDED", "CANCELLED"].includes(status);
 }
 
 function ArtifactsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
@@ -1721,15 +1795,27 @@ function ArtifactSummary({ artifact, dataset, onOpenCitation }: { artifact: Know
 }
 
 function ArtifactDetail({ artifact, dataset, onOpenCitation }: { artifact: KnowledgeArtifact; dataset: KnowledgeWorkspaceDataset; onOpenCitation: (citation: KnowledgeCitation) => void }) {
+  const workflow = dataset.workflows.find((item) => item.id === artifact.workflowId);
+  const citations = artifact.citationIds.map((id) => dataset.citations.find((citation) => citation.citationId === id)).filter((citation): citation is KnowledgeCitation => Boolean(citation));
   return (
     <Card>
       <CardHeader><CardTitle>{artifact.title}</CardTitle><CardDescription>{artifact.artifactType} / {formatKnowledgeDate(artifact.createdAt)}</CardDescription></CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2"><StatusBadge value={artifact.validationStatus} /><StatusBadge value={artifact.stalenessStatus} /></div>
+        <div className="grid gap-2 md:grid-cols-3">
+          <Meta label="Workflow origin" value={workflow ? `${workflowTypeLabels[workflow.workflowType]} / ${workflow.id}` : artifact.workflowId ?? "Not linked"} />
+          <Meta label="Evidence links" value={String(artifact.citationIds.length)} />
+          <Meta label="Export" value={artifact.markdown ? "Markdown available" : "No content available"} />
+        </div>
         {artifact.staleReasons.length > 0 ? <Alert><AlertTriangleIcon className="size-4" /><AlertTitle>Stale impact</AlertTitle><AlertDescription>{artifact.staleReasons.join(" ")}</AlertDescription></Alert> : null}
         <pre className="whitespace-pre-wrap rounded-md border bg-muted/30 p-4 text-sm">{artifact.markdown}</pre>
+        <div className="grid gap-2">
+          {citations.map((citation) => (
+            <CitationButton key={citation.citationId} citation={citation} onOpenCitation={onOpenCitation} />
+          ))}
+        </div>
         <CitationRow citationIds={artifact.citationIds} dataset={dataset} onOpenCitation={onOpenCitation} />
-        <Button variant="outline">Download Markdown</Button>
+        <Button variant="outline" disabled={!artifact.markdown}>Download Markdown</Button>
       </CardContent>
     </Card>
   );

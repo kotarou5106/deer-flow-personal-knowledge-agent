@@ -13,8 +13,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 
-from deerflow.knowledge.enums import ArtifactStalenessStatus, ArtifactValidationStatus
-from deerflow.knowledge.models import Artifact, ArtifactEvidenceLink, Chunk, Claim, ClaimEvidenceLink, DocumentRevision, EvidenceSpan, Source, SourceSnapshot
+from deerflow.knowledge.enums import ArtifactStalenessStatus, ArtifactValidationStatus, WorkflowStatus
+from deerflow.knowledge.models import Artifact, ArtifactEvidenceLink, Chunk, Claim, ClaimEvidenceLink, DocumentRevision, EvidenceSpan, Source, SourceSnapshot, WorkflowRun, WorkflowStepRun
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL"),
@@ -133,14 +133,18 @@ async def _chunk_by_id(app, chunk_id: str) -> Chunk:
 async def _claim_for_revision_text(app, revision_id: str, text_fragment: str) -> Claim:
     async with app.state.knowledge_provider.database.session_factory() as session:
         claim = (
-            await session.execute(
-                select(Claim)
-                .join(ClaimEvidenceLink, ClaimEvidenceLink.claim_id == Claim.id)
-                .join(EvidenceSpan, EvidenceSpan.id == ClaimEvidenceLink.evidence_span_id)
-                .join(Chunk, Chunk.id == EvidenceSpan.chunk_id)
-                .where(Chunk.revision_id == revision_id, Claim.claim_text.contains(text_fragment))
+            (
+                await session.execute(
+                    select(Claim)
+                    .join(ClaimEvidenceLink, ClaimEvidenceLink.claim_id == Claim.id)
+                    .join(EvidenceSpan, EvidenceSpan.id == ClaimEvidenceLink.evidence_span_id)
+                    .join(Chunk, Chunk.id == EvidenceSpan.chunk_id)
+                    .where(Chunk.revision_id == revision_id, Claim.claim_text.contains(text_fragment))
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         assert claim is not None
         return claim
 
@@ -170,6 +174,19 @@ async def _create_artifact_for_claim(app, claim: Claim) -> str:
         return str(artifact.id)
 
 
+async def _mark_first_workflow_step_failed(app, workflow_run_id: str) -> None:
+    async with app.state.knowledge_provider.database.session_factory() as session:
+        run = await session.get(WorkflowRun, workflow_run_id)
+        assert run is not None
+        step = (await session.execute(select(WorkflowStepRun).where(WorkflowStepRun.workspace_id == run.workspace_id, WorkflowStepRun.workflow_run_id == run.id).order_by(WorkflowStepRun.sequence).limit(1))).scalar_one()
+        run.status = WorkflowStatus.FAILED
+        run.error = "planned retry fixture"
+        step.status = WorkflowStatus.FAILED
+        step.error_type = "RuntimeError"
+        step.error_message = "planned retry fixture"
+        await session.commit()
+
+
 async def _read_sse_until_terminal(client: httpx.AsyncClient, job_id: str, *, user_id: str = "owner-a") -> list[tuple[int, str]]:
     events: list[tuple[int, str]] = []
     async with client.stream("GET", f"/api/knowledge/jobs/{job_id}/events", headers=_headers(user_id), timeout=10) as response:
@@ -193,13 +210,7 @@ async def _read_sse_until_terminal(client: httpx.AsyncClient, job_id: str, *, us
 async def _local_http_server(body: bytes, media_type: str = "text/html") -> AsyncIterator[str]:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await reader.read(4096)
-        writer.write(
-            b"HTTP/1.1 200 OK\r\n"
-            + f"Content-Type: {media_type}\r\n".encode()
-            + f"Content-Length: {len(body)}\r\n".encode()
-            + b"Connection: close\r\n\r\n"
-            + body
-        )
+        writer.write(b"HTTP/1.1 200 OK\r\n" + f"Content-Type: {media_type}\r\n".encode() + f"Content-Length: {len(body)}\r\n".encode() + b"Connection: close\r\n\r\n" + body)
         await writer.drain()
         writer.close()
         await writer.wait_closed()
@@ -246,9 +257,7 @@ async def test_file_ingestion_sse_source_detail_search_and_workspace_isolation(f
             first_body = first.json()
             forbidden = {"workspace_id", "user_id", "thread_id", "actor_id"}
             async with app.state.knowledge_provider.database.session_factory() as session:
-                payload = (
-                    await session.execute(text("SELECT payload FROM knowledge_jobs WHERE id = :job_id"), {"job_id": first_body["job_id"]})
-                ).scalar_one()
+                payload = (await session.execute(text("SELECT payload FROM knowledge_jobs WHERE id = :job_id"), {"job_id": first_body["job_id"]})).scalar_one()
             assert not (forbidden & set(payload))
             assert {"_trusted_user_id", "_trusted_thread_id", "_trusted_storage_root"} <= set(payload)
 
@@ -536,6 +545,157 @@ async def test_revision_update_conflict_report_and_stale_artifact_fullstack(full
 
 
 @pytest.mark.asyncio
+async def test_workflow_artifact_fullstack_decision_memo_and_project_context(fullstack_gateway_config, migrated_knowledge_db) -> None:
+    from app.gateway.app import create_app
+    from deerflow.config.paths import get_paths
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        owner_id = "workflow-owner"
+        paths = get_paths()
+        paths.ensure_thread_dirs(owner_id, user_id=owner_id)
+        upload_dir = paths.sandbox_uploads_dir(owner_id, user_id=owner_id)
+        workflow_source = upload_dir / "workflow-evidence.txt"
+        workflow_source.write_text(
+            "Storage boundary is user scoped. Rollout risk is medium. Recommended option is staged launch.",
+            encoding="utf-8",
+        )
+
+        client = _client(app)
+        try:
+            terminal = await _ingest_file(
+                client,
+                source_uri="/mnt/user-data/uploads/workflow-evidence.txt",
+                media_type="text/plain",
+                idempotency_key="workflow-evidence-v1",
+                user_id=owner_id,
+            )
+            source_id = terminal["result_reference"]["source_id"]
+
+            decision_input = {
+                "workflow_type": "decision_memo",
+                "input": {"decision": "Choose storage boundary", "source_ids": [source_id], "options": ["User scoped", "Shared global"]},
+                "idempotency_key": "decision-memo-storage",
+            }
+            created = await client.post("/api/knowledge/workflows", json=decision_input, headers=_headers(owner_id))
+            duplicate = await client.post("/api/knowledge/workflows", json=decision_input, headers=_headers(owner_id))
+            assert created.status_code == 200
+            assert duplicate.status_code == 200
+            workflow_id = created.json()["workflow_run_id"]
+            assert duplicate.json()["workflow_run_id"] == workflow_id
+            assert len(created.json()["steps"]) == 3
+
+            advanced = await client.post(f"/api/knowledge/workflows/{workflow_id}/advance", headers=_headers(owner_id))
+            assert advanced.status_code == 200
+            workflow_body = advanced.json()
+            assert workflow_body["status"] == "completed", {"error": workflow_body.get("error"), "steps": workflow_body.get("steps")}
+            assert workflow_body["artifact_ids"]
+            assert {step["status"] for step in workflow_body["steps"]} == {"succeeded"}
+
+            repeated = await client.post(f"/api/knowledge/workflows/{workflow_id}/advance", headers=_headers(owner_id))
+            assert repeated.status_code == 200
+            assert repeated.json()["artifact_ids"] == workflow_body["artifact_ids"]
+
+            artifact_id = workflow_body["artifact_ids"][0]
+            artifact = await client.get(f"/api/knowledge/artifacts/{artifact_id}", headers=_headers(owner_id))
+            assert artifact.status_code == 200
+            artifact_body = artifact.json()
+            assert artifact_body["workflow_run_id"] == workflow_id
+            assert artifact_body["artifact_type"] == "decision_memo"
+            assert "Executive Summary" in artifact_body["markdown"]
+            assert "Decision Context" in artifact_body["markdown"]
+            assert "Options / Alternatives" in artifact_body["markdown"]
+            assert "Evidence" in artifact_body["markdown"]
+            assert "Risks" in artifact_body["markdown"]
+            assert "Recommendation" in artifact_body["markdown"]
+            assert "Open Questions" in artifact_body["markdown"]
+            assert "Adoption / Next Steps" in artifact_body["markdown"]
+            assert "References / Citations" in artifact_body["markdown"]
+            assert artifact_body["evidence_links"]
+            link = artifact_body["evidence_links"][0]
+            assert link["source_id"] == source_id
+            assert link["revision_id"]
+            assert link["chunk_id"]
+            assert link["claim_id"]
+            chunk = await _chunk_by_id(app, link["chunk_id"])
+            assert chunk.content[link["start_offset"] : link["end_offset"]] == link["quoted_text"]
+
+            links = await client.get(f"/api/knowledge/artifacts/{artifact_id}/evidence-links", headers=_headers(owner_id))
+            assert links.status_code == 200
+            assert links.json()["data"]
+
+            invalid = await client.post(f"/api/knowledge/workflows/{workflow_id}/pause", headers=_headers(owner_id))
+            assert invalid.status_code == 409
+            assert invalid.json()["detail"]["error"]["code"] == "invalid_workflow_transition"
+
+            project = await client.post(
+                "/api/knowledge/workflows",
+                json={
+                    "workflow_type": "project_context_pack",
+                    "input": {"project": "Storage rollout", "source_ids": [source_id]},
+                    "idempotency_key": "project-context-storage",
+                },
+                headers=_headers(owner_id),
+            )
+            assert project.status_code == 200
+            project_id = project.json()["workflow_run_id"]
+            paused = await client.post(f"/api/knowledge/workflows/{project_id}/pause", headers=_headers(owner_id))
+            assert paused.status_code == 200
+            assert paused.json()["status"] == "paused"
+            resumed = await client.post(f"/api/knowledge/workflows/{project_id}/resume", headers=_headers(owner_id))
+            assert resumed.status_code == 200
+            assert resumed.json()["status"] == "completed"
+            project_artifact = await client.get(f"/api/knowledge/artifacts/{resumed.json()['artifact_ids'][0]}", headers=_headers(owner_id))
+            assert project_artifact.status_code == 200
+            assert project_artifact.json()["artifact_type"] == "project_context_pack"
+            assert project_artifact.json()["evidence_links"]
+
+            retry_workflow = await client.post(
+                "/api/knowledge/workflows",
+                json={"workflow_type": "topic_dossier", "input": {"topic": "Retry path", "source_ids": [source_id]}},
+                headers=_headers(owner_id),
+            )
+            retry_id = retry_workflow.json()["workflow_run_id"]
+            await _mark_first_workflow_step_failed(app, retry_id)
+            retried = await client.post(f"/api/knowledge/workflows/{retry_id}/retry", headers=_headers(owner_id))
+            assert retried.status_code == 200
+            assert retried.json()["status"] == "completed"
+            assert retried.json()["steps"][0]["attempt"] == 1
+
+            for workflow_type, input_payload in [
+                ("reading_synthesis", {"reading_set": "Workflow reading", "source_ids": [source_id]}),
+                ("meeting_preparation", {"meeting": "Workflow sync", "source_ids": [source_id]}),
+                ("knowledge_update_review", {"source_id": source_id, "old_revision_id": "old-rev", "new_revision_id": "new-rev"}),
+            ]:
+                response = await client.post("/api/knowledge/workflows", json={"workflow_type": workflow_type, "input": input_payload}, headers=_headers(owner_id))
+                assert response.status_code == 200
+                assert response.json()["workflow_type"] == workflow_type
+
+            action = await client.post(
+                "/api/knowledge/workflows",
+                json={"workflow_type": "knowledge_to_action", "input": {"objective": "Prepare action draft", "source_ids": [source_id]}},
+                headers=_headers(owner_id),
+            )
+            assert action.status_code == 200
+            action_advanced = await client.post(f"/api/knowledge/workflows/{action.json()['workflow_run_id']}/advance", headers=_headers(owner_id))
+            assert action_advanced.status_code == 200
+            assert action_advanced.json()["status"] == "requires_approval"
+            assert action_advanced.json()["steps"][2]["output_payload"]["action_draft"]["executed"] is False
+
+            workflows = await client.get("/api/knowledge/workflows?limit=100", headers=_headers(owner_id))
+            assert workflows.status_code == 200
+            workflow_types = {item["workflow_type"] for item in workflows.json()["data"]}
+            assert {"decision_memo", "project_context_pack", "topic_dossier", "reading_synthesis", "meeting_preparation", "knowledge_update_review", "knowledge_to_action"} <= workflow_types
+
+            isolated_workflow = await client.get(f"/api/knowledge/workflows/{workflow_id}", headers=_headers("workflow-other-owner"))
+            isolated_artifact = await client.get(f"/api/knowledge/artifacts/{artifact_id}", headers=_headers("workflow-other-owner"))
+            assert isolated_workflow.status_code == 404
+            assert isolated_artifact.status_code == 404
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_analysis_sync_result_citations_and_workspace_isolation(fullstack_gateway_config, migrated_knowledge_db) -> None:
     from app.gateway.app import create_app
     from deerflow.config.paths import get_paths
@@ -606,10 +766,7 @@ async def test_analysis_sync_result_citations_and_workspace_isolation(fullstack_
             assert inference["based_on_citations"]
             assert "inference" in inference["reasoning_summary"].lower()
 
-            unresolved_text = " ".join(
-                [item["question"] + " " + item["needed_evidence"] for item in body["unresolved_questions"]]
-                + [item["statement"] + " " + item["reason"] for item in body["unsupported_or_insufficient_claims"]]
-            )
+            unresolved_text = " ".join([item["question"] + " " + item["needed_evidence"] for item in body["unresolved_questions"]] + [item["statement"] + " " + item["reason"] for item in body["unsupported_or_insufficient_claims"]])
             assert "customer" in unresolved_text.lower() or "missing" in unresolved_text.lower()
 
             for fact in body["supported_facts"]:

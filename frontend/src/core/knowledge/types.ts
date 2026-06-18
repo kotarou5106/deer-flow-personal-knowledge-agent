@@ -211,7 +211,7 @@ export type KnowledgeClient = {
   createWorkflow: (
     input: WorkflowCreateInput,
     options?: KnowledgeRequestOptions,
-  ) => Promise<KnowledgeJobAccepted | Record<string, unknown>>;
+  ) => Promise<Record<string, unknown>>;
   listWorkflows: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
@@ -223,7 +223,23 @@ export type KnowledgeClient = {
   advanceWorkflow: (
     workflowRunId: string,
     options?: KnowledgeRequestOptions,
-  ) => Promise<KnowledgeJobAccepted>;
+  ) => Promise<Record<string, unknown>>;
+  pauseWorkflow: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  resumeWorkflow: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  retryWorkflow: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  generateWorkflowArtifact: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   listArtifacts: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
@@ -232,6 +248,10 @@ export type KnowledgeClient = {
     artifactId: string,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
+  listArtifactEvidenceLinks: (
+    artifactId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<UnknownListEnvelope>;
   listApprovals: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
@@ -286,7 +306,6 @@ export type MissingKnowledgeCapability =
 
 export const missingBackendCapabilities: MissingKnowledgeCapability[] = [
   "graph_expansion",
-  "workflow_artifact_generation",
   "artifact_validation",
   "provenance_validation",
   "workflow_validation",

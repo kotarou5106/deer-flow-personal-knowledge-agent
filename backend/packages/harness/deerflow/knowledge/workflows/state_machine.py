@@ -4,8 +4,8 @@ from deerflow.knowledge.enums import WorkflowStatus
 
 _TRANSITIONS: dict[WorkflowStatus, set[WorkflowStatus]] = {
     WorkflowStatus.DRAFT: {WorkflowStatus.READY, WorkflowStatus.CANCELLED},
-    WorkflowStatus.READY: {WorkflowStatus.RUNNING, WorkflowStatus.CANCELLED},
-    WorkflowStatus.PENDING: {WorkflowStatus.READY, WorkflowStatus.RUNNING, WorkflowStatus.CANCELLED},
+    WorkflowStatus.READY: {WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.CANCELLED},
+    WorkflowStatus.PENDING: {WorkflowStatus.READY, WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.CANCELLED},
     WorkflowStatus.RUNNING: {
         WorkflowStatus.COMPLETED,
         WorkflowStatus.SUCCEEDED,

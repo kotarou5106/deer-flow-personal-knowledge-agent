@@ -1,6 +1,6 @@
 # Frontend Backend Contract Gaps
 
-The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model and ingestion/search vertical slice is now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
+The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model, ingestion/search, workflow, and artifact vertical slices are now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
 
 ## Completed In This Integration Stage
 
@@ -12,6 +12,25 @@ The Knowledge Workspace UI only calls or models formal Gateway contracts. The re
 - `GET /api/knowledge/jobs/{job_id}`
 - `GET /api/knowledge/jobs/{job_id}/events`
 - `POST /api/knowledge/search` for retrieved chunks with provenance-backed citations
+- `GET /api/knowledge/workflows`
+- `POST /api/knowledge/workflows`
+- `GET /api/knowledge/workflows/{workflow_run_id}`
+- `POST /api/knowledge/workflows/{workflow_run_id}/advance`
+- `POST /api/knowledge/workflows/{workflow_run_id}/pause`
+- `POST /api/knowledge/workflows/{workflow_run_id}/resume`
+- `POST /api/knowledge/workflows/{workflow_run_id}/retry`
+- `GET /api/knowledge/artifacts`
+- `POST /api/knowledge/workflows/{workflow_run_id}/artifacts`
+- `GET /api/knowledge/artifacts/{artifact_id}`
+- `GET /api/knowledge/artifacts/{artifact_id}/evidence-links`
+
+## Workflow / Artifact Status
+
+Production Workflow UI now calls the formal Gateway contracts for create, advance, pause, resume, retry, and artifact generation. Gateway executes these through the database-backed deterministic workflow engine, not durable fake job fallbacks. Workflow responses include steps, artifact IDs, trusted input, timestamps, and errors.
+
+Artifact detail now includes markdown preview text, workflow origin, staleness/validation state, and evidence links. Evidence links include artifact-evidence link IDs plus source, revision, chunk, evidence span, and claim provenance where available.
+
+Knowledge-to-Action is intentionally draft-only in this stage. It can create a non-executed action draft, but approval routing and action execution remain out of scope.
 
 | Page | Needed Capability | Existing Domain Service / Tool | Missing Gateway Endpoint | Suggested Contract | Priority |
 | --- | --- | --- | --- | --- | --- |
@@ -21,10 +40,8 @@ The Knowledge Workspace UI only calls or models formal Gateway contracts. The re
 | Graph | Entity/claim/source/evidence graph and neighbor expansion | retrieval graph module | `GET /api/knowledge/graph`, `GET /api/knowledge/graph/nodes/{id}/neighbors` | `{nodes, edges, cursors, truncated}` | Medium |
 | Conflicts | Conflict detail, affected artifacts, and recommended next step | updates conflict detector | Extend `GET /api/knowledge/conflicts` and add `GET /api/knowledge/conflicts/{id}` | `{classification,status,claims,citations,affected_artifacts,recommended_next_step}` | High |
 | Conflicts | Resolve or annotate conflict | no formal mutation exposed | `POST /api/knowledge/conflicts/{id}/decision` | `{decision, rationale}` with audit record | Medium |
-| Workflows | List workflow runs | workflow repository | `GET /api/knowledge/workflows` | `{data:[WorkflowRunSummary], pagination}` | High |
-| Workflows | Pause workflow | workflow state machine may support state transitions, no Gateway route | `POST /api/knowledge/workflows/{id}/pause` | `{workflow_run_id,status,current_step}` | Medium |
-| Workflows | Step timeline | workflow step repository | `GET /api/knowledge/workflows/{id}/steps` or include in detail | `{steps:[{key,sequence,status,input_summary,output_summary,error}]}` | High |
-| Artifacts | Artifact content preview/download and provenance bundle | artifact service and repositories | Extend `GET /api/knowledge/artifacts/{id}` | `{artifact, markdown, evidence_links, workflow_origin, stale_reasons}` | High |
+| Workflows | Per-step partial execution controls and manual parameter edits | workflow engine | No formal endpoint | Future mutation contract for a specific step run | Low |
+| Artifacts | Download/export formats beyond markdown preview and stored JSON payload | artifact storage service | Dedicated download/export route | File response or signed project-owned download URL | Medium |
 | Approvals | Payload invalidation visibility | approval/action services | Extend approval detail | `{payload_hash,current_payload_hash,is_payload_stale}` | High |
 | Approvals | Execution reconciliation status detail | action execution model | Extend action execute/detail response | `{execution_status,result,audit,reconciliation_required_reason}` | High |
 | Activity | Unified audit/activity log beyond source/job events | audit model exists; activity route currently jobs/source-focused | Extend `GET /api/knowledge/activity` or add `GET /api/knowledge/audit` | cursor-paginated events with safe summaries | Medium |

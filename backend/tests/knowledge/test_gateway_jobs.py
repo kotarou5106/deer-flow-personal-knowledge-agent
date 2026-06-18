@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.testclient import TestClient
 
-from app.gateway.routers.knowledge import AnalysisCreateRequest, IngestionCreateRequest, KnowledgeUpdateReportRequest, RevisionCompareRequest
+from app.gateway.routers.knowledge import AnalysisCreateRequest, IngestionCreateRequest, KnowledgeUpdateReportRequest, RevisionCompareRequest, WorkflowCreateRequest
 from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker, NonRetryableKnowledgeJobError
 from deerflow.knowledge.jobs.models import KnowledgeJob, KnowledgeJobEvent, KnowledgeJobStatus, KnowledgeJobType
 from deerflow.knowledge.jobs.repository import KnowledgeJobRepository, utc_now
@@ -68,6 +68,14 @@ def test_update_report_schema_rejects_client_trusted_fields() -> None:
         )
 
 
+def test_workflow_schema_rejects_nested_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        WorkflowCreateRequest(
+            workflow_type="decision_memo",
+            input={"decision": "Ship", "workspace_id": str(uuid4())},
+        )
+
+
 def test_gateway_registers_knowledge_routes() -> None:
     from app.gateway.app import create_app
 
@@ -83,6 +91,12 @@ def test_gateway_registers_knowledge_routes() -> None:
     assert "/api/knowledge/update-reports" in paths
     assert "/api/knowledge/conflicts/{conflict_group_id}" in paths
     assert "/api/knowledge/workflows" in paths
+    assert "/api/knowledge/workflows/{workflow_run_id}/advance" in paths
+    assert "/api/knowledge/workflows/{workflow_run_id}/pause" in paths
+    assert "/api/knowledge/workflows/{workflow_run_id}/resume" in paths
+    assert "/api/knowledge/workflows/{workflow_run_id}/retry" in paths
+    assert "/api/knowledge/workflows/{workflow_run_id}/artifacts" in paths
+    assert "/api/knowledge/artifacts/{artifact_id}/evidence-links" in paths
 
 
 def _knowledge_headers() -> dict[str, str]:
@@ -109,8 +123,10 @@ class _FakeGatewayJobService:
     def __init__(self) -> None:
         self.job_id = uuid4()
         self.seen_workspace_ids = []
+        self.enqueue_count = 0
 
     async def enqueue(self, *, workspace_id, job_type, payload, idempotency_key=None, max_attempts=3):
+        self.enqueue_count += 1
         self.seen_workspace_ids.append(workspace_id)
         assert "_trusted_user_id" in payload
         assert "workspace_id" not in payload
@@ -152,6 +168,35 @@ class _FakeGatewayProvider:
 
     async def list_workflows(self, context, payload):
         return {"data": [], "pagination": {"limit": payload["limit"], "offset": payload["offset"]}}
+
+    async def workflow_create(self, context, payload):
+        assert payload["input"]["user_id"] == context.user_id
+        assert payload["input"]["thread_id"] == context.thread_id
+        return {"workflow_run_id": "workflow-1", "status": "ready", "current_step": None, "steps": []}
+
+    async def workflow_get(self, context, workflow_run_id):
+        return {"workflow_run_id": workflow_run_id, "status": "ready", "current_step": None, "steps": []}
+
+    async def workflow_advance(self, context, workflow_run_id):
+        return {"workflow_run_id": workflow_run_id, "status": "completed", "current_step": None, "steps": []}
+
+    async def workflow_pause(self, context, workflow_run_id):
+        return {"workflow_run_id": workflow_run_id, "status": "paused", "current_step": None, "steps": []}
+
+    async def workflow_resume(self, context, workflow_run_id):
+        return {"workflow_run_id": workflow_run_id, "status": "running", "current_step": "retrieve_evidence", "steps": []}
+
+    async def workflow_retry(self, context, workflow_run_id):
+        return {"workflow_run_id": workflow_run_id, "status": "running", "current_step": "analyze_evidence", "steps": []}
+
+    async def workflow_generate_artifact(self, context, payload):
+        return {"artifact_id": "artifact-1", "workflow_run_id": payload["workflow_run_id"], "evidence_link_count": 2}
+
+    async def get_artifact(self, context, artifact_id):
+        return {"artifact_id": artifact_id, "artifact_type": "decision_memo", "title": "Decision Memo", "evidence_links": []}
+
+    async def list_artifact_evidence_links(self, context, artifact_id):
+        return {"data": [{"artifact_id": artifact_id, "usage_type": "direct_evidence"}]}
 
     async def action_execute(self, context, approval_request_id):
         raise ValueError("ApprovalRequest is not approved")
@@ -293,6 +338,42 @@ def test_gateway_workflow_list_paginates(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["pagination"] == {"limit": 20, "offset": 3}
+
+
+def test_gateway_workflow_mutations_use_sync_provider_contract(monkeypatch) -> None:
+    service = _FakeGatewayJobService()
+    client = _client_with_state(monkeypatch, job_service=service, provider=_FakeGatewayProvider())
+
+    created = client.post(
+        "/api/knowledge/workflows",
+        json={"workflow_type": "decision_memo", "input": {"decision": "Ship"}, "idempotency_key": "same"},
+        headers=_knowledge_headers(),
+    )
+    advanced = client.post("/api/knowledge/workflows/workflow-1/advance", headers=_knowledge_headers())
+    paused = client.post("/api/knowledge/workflows/workflow-1/pause", headers=_knowledge_headers())
+    resumed = client.post("/api/knowledge/workflows/workflow-1/resume", headers=_knowledge_headers())
+    retried = client.post("/api/knowledge/workflows/workflow-1/retry", headers=_knowledge_headers())
+    artifact = client.post("/api/knowledge/workflows/workflow-1/artifacts", json={}, headers=_knowledge_headers())
+
+    assert created.status_code == 200
+    assert created.json()["workflow_run_id"] == "workflow-1"
+    assert advanced.status_code == 200
+    assert advanced.json()["status"] == "completed"
+    assert paused.json()["status"] == "paused"
+    assert resumed.json()["status"] == "running"
+    assert retried.json()["current_step"] == "analyze_evidence"
+    assert artifact.status_code == 200
+    assert artifact.json()["evidence_link_count"] == 2
+    assert service.enqueue_count == 0
+
+
+def test_gateway_artifact_evidence_links_use_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+
+    response = client.get("/api/knowledge/artifacts/artifact-1/evidence-links", headers=_knowledge_headers())
+
+    assert response.status_code == 200
+    assert response.json()["data"] == [{"artifact_id": "artifact-1", "usage_type": "direct_evidence"}]
 
 
 def test_gateway_unconfigured_job_api_returns_structured_service_not_configured(monkeypatch) -> None:
