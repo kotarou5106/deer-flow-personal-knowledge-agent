@@ -99,12 +99,14 @@ services:
       args:
         PNPM_STORE_PATH: ${PNPM_STORE_PATH:-/root/.local/share/pnpm/store}
         NPM_REGISTRY: ${NPM_REGISTRY:-}
+        NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE: ${NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE:-false}
+        NEXT_PUBLIC_STATIC_WEBSITE_ONLY: ${NEXT_PUBLIC_STATIC_WEBSITE_ONLY:-false}
     container_name: deer-flow-frontend
     environment:
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}
       - DEER_FLOW_INTERNAL_GATEWAY_BASE_URL=http://gateway:8001
-      - NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false
-      - NEXT_PUBLIC_STATIC_WEBSITE_ONLY=false
+      - NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=${NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE:-false}
+      - NEXT_PUBLIC_STATIC_WEBSITE_ONLY=${NEXT_PUBLIC_STATIC_WEBSITE_ONLY:-false}
     env_file:
       - path: ../frontend/.env
         required: false
