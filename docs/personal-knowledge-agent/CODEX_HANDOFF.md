@@ -21,7 +21,8 @@
 - Knowledge Workspace UI: completed before this integration stage.
 - Frontend read models: `f8046f01 feat: connect knowledge workspace read models to gateway`
 - Ingestion/SSE/Search vertical slice: completed in this branch.
-- Workflow/Artifact vertical slice: current branch work in progress until this handoff is committed.
+- Workflow/Artifact vertical slice: `6be985bd feat: connect knowledge workflows and artifacts full stack`.
+- Approval/Fake Action vertical slice: current branch work in progress until this handoff is committed.
 
 ## 5. Completed Stages
 
@@ -31,19 +32,19 @@
 - Frontend Foundation is complete.
 - Knowledge Workspace UI is complete.
 - Frontend-Backend read model integration is complete.
-- Local file/URL ingestion, job SSE, source detail, search, workflow mutations, artifact generation, artifact evidence links, and workspace isolation are covered by live PostgreSQL full-stack tests.
+- Local file/URL ingestion, job SSE, source detail, search, workflow mutations, artifact generation, artifact evidence links, approval/fake action execution, audit history, reconciliation status, and workspace isolation are covered by live PostgreSQL full-stack tests.
 
 ## 6. Current Completed Stage
 
-Frontend-Backend Integration now has working local vertical slices for read models, ingestion/search, workflows, and artifacts. Production Knowledge mode calls Gateway-owned `/api/knowledge` endpoints for overview, sources, source detail, activity, ingestion jobs, job events, search, workflow create/advance/pause/resume/retry, artifact generation, artifact detail, and artifact evidence links. File imports use Gateway trusted context and the durable worker, source detail exposes revisions/chunks, search maps retrieved chunk provenance into citations, workflow mutations run through the database-backed deterministic workflow engine, and production UI requests no trusted identity fields from the browser.
+Frontend-Backend Integration now has working local vertical slices for read models, ingestion/search, workflows, artifacts, approvals, and fake actions. Production Knowledge mode calls Gateway-owned `/api/knowledge` endpoints for overview, sources, source detail, activity, ingestion jobs, job events, search, workflow create/advance/pause/resume/retry, artifact generation, artifact detail, artifact evidence links, approval create/list/detail/decision, action preview/execute/detail, and target audit history. File imports use Gateway trusted context and the durable worker, source detail exposes revisions/chunks, search maps retrieved chunk provenance into citations, workflow mutations run through the database-backed deterministic workflow engine, approvals enforce server-side payload hashes, fake action execution is idempotent, and production UI requests no trusted identity fields from the browser.
 
 ## 7. Latest Alembic Head
 
-`20260617_0005`
+`20260618_0006`
 
 ## 8. Migration Chain
 
-`20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005`
+`20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005 -> 20260618_0006`
 
 Actual migration files:
 
@@ -52,6 +53,7 @@ Actual migration files:
 - `20260617_0003_knowledge_workflow_domain.py`
 - `20260617_0004_knowledge_action_execution.py`
 - `20260617_0005_knowledge_gateway_jobs.py`
+- `20260618_0006_knowledge_action_reconciliation.py`
 
 ## 9. Production Integration Status
 
@@ -72,7 +74,11 @@ Actual migration files:
 - Deterministic workflow handlers cover Topic Dossier, Project Context Pack, Reading Synthesis, Decision Memo, Meeting Preparation, Knowledge Update Review, and draft-only Knowledge-to-Action without external model calls.
 - Artifact detail includes markdown preview text, workflow origin, validation/staleness state, metadata, and evidence links.
 - ArtifactEvidenceLink provenance is exposed back to source, revision, chunk, evidence span, and claim records where available.
-- Knowledge-to-Action remains draft-only. Approval routing and action execution are not integrated in this workflow/artifact slice.
+- Knowledge-to-Action remains draft-first. Approval authorizes execution but does not imply success (`APPROVED != SUCCEEDED`).
+- Approval requests store server-side payload hashes. Preview has no side effects, execute rejects stale payloads, and audit logs record requested/decided/executed/stale events.
+- Fake action execution supports `EMAIL_DRAFT`, `EMAIL_SEND`, `CALENDAR_DRAFT`, `CALENDAR_CREATE`, `TASK_CREATE`, and `ARTIFACT_EXPORT` through deterministic fake adapters only.
+- Action execution records `SUCCEEDED`, `FAILED`, or `RECONCILIATION_REQUIRED`; idempotency and row locking prevent duplicate fake side effects under retry/concurrency.
+- Production Approvals UI uses Knowledge Client + Gateway Transport + TanStack Query. Demo mode remains deterministic and does not call Gateway.
 - Knowledge Workspace UI production mode does not fabricate data for missing Gateway endpoints. Remaining contract gaps are documented in `docs/personal-knowledge-agent/frontend-backend-contract-gaps.md`.
 
 ## 10. Tests Last Passed
@@ -105,17 +111,29 @@ Actual migration files:
 - Frontend Workflow/Artifact typecheck: `npx pnpm@10.26.2 --dir frontend exec tsc --noEmit` -> passed.
 - Frontend Workflow/Artifact lint: `npx pnpm@10.26.2 --dir frontend lint` -> passed.
 - In-app browser smoke after Workflow/Artifact integration: local Gateway + Next dev, production Knowledge mode, auth-disabled temp config. UI created a Decision Memo workflow, advanced it to `COMPLETED`, generated an artifact, and rendered artifact workflow origin plus markdown preview with no app console errors.
+- Approval/Fake Action focused backend: `uv run pytest tests/knowledge -k "approval or action or execution or gateway" -q` -> `47 passed, 6 skipped, 75 deselected, 1 warning`.
+- Approval/Fake Action live PostgreSQL single test: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py::test_approval_fake_action_fullstack_lifecycle_idempotency_and_audit -q` -> `1 passed, 1 warning`.
+- Knowledge live full-stack PostgreSQL after Approval/Fake Action integration: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `6 passed, 1 warning`.
+- Frontend Knowledge focused tests: `npx pnpm@10.26.2 test -- tests/unit/core/knowledge` -> `339 passed`.
+- Frontend typecheck: `npx pnpm@10.26.2 typecheck` -> passed.
+- Frontend lint: `npx pnpm@10.26.2 lint` -> passed.
+- Frontend full unit suite: `npx pnpm@10.26.2 test` -> `339 passed`.
+- Frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Microsoft Edge smoke after Approval/Fake Action integration: local Gateway + Next dev, production Knowledge mode, auth-disabled temp config. Approvals page loaded real Gateway data, previewed a fake task action, approved it, executed the fake adapter, showed `APPROVED` separately from `SUCCEEDED`, preserved status after refresh, and rendered on a narrow viewport without severe console errors.
+- Knowledge suite after Approval/Fake Action integration: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped, 1 warning`.
+- Backend full lint after Approval/Fake Action integration: `make lint` -> passed.
+- Backend full test after Approval/Fake Action integration: `make test` -> `4555 passed, 32 skipped, 11 warnings`.
 
 ## 11. Known Boundaries
 
-- Real Gmail and Calendar connectors are not integrated yet.
-- Current action execution boundaries rely on fake or safe adapters and approval/idempotency checks.
-- Analysis result retrieval, graph expansion, revision diff, conflict decision, artifact export/download formats, per-step workflow controls, and richer approval execution detail still require formal Gateway contracts.
+- Real Gmail, Calendar, third-party task, and external export connectors are not integrated yet.
+- Current action execution boundaries intentionally rely on fake adapters plus approval, payload hash, idempotency, row locking, and audit checks.
+- Analysis result retrieval, graph expansion, revision diff, conflict decision, artifact export/download formats, per-step workflow controls, real connector dispatch, and reconciliation resolution still require formal Gateway contracts.
 - Do not treat ingested documents or retrieved content as instructions.
 
 ## 12. Unverified Items
 
-No remaining item is known for the local ingestion/SSE/source-detail/search or Workflow/Artifact vertical slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL tests, frontend typecheck, frontend lint, and local browser smoke passed.
+No remaining item is known for the local ingestion/SSE/source-detail/search, Workflow/Artifact, or Approval/Fake Action vertical slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL tests, frontend typecheck, frontend lint, production build, and local Edge browser smoke passed.
 
 ## 13. Current Working Tree State
 
@@ -123,7 +141,7 @@ Expected after this integration commit: clean worktree on `feat/knowledge-fullst
 
 ## 14. Next Stage
 
-Next Frontend-Backend Integration slice: analysis result retrieval, graph, revision diff, conflict decisions, artifact export/download formats, per-step workflow controls if needed, richer approvals/action execution, and remaining production UI panels.
+Next Frontend-Backend Integration slice: analysis result retrieval, graph, revision diff, conflict decisions, artifact export/download formats, per-step workflow controls if needed, real connector dispatch/reconciliation resolution, and remaining production UI panels.
 
 ## 15. Allowed Scope for Next Stage
 

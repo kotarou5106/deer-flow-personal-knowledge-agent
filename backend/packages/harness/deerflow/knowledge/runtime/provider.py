@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -17,7 +18,7 @@ from deerflow.knowledge.analysis import AnalysisService
 from deerflow.knowledge.analysis.model_client import DeterministicAnalysisModel
 from deerflow.knowledge.config import KnowledgeDatabaseConfig
 from deerflow.knowledge.database import KnowledgeDatabase
-from deerflow.knowledge.enums import ApprovalStatus, ClaimStatus, JobStatus, RiskLevel, WorkflowStatus
+from deerflow.knowledge.enums import ActionExecutionStatus, ApprovalStatus, ClaimStatus, JobStatus, RiskLevel, WorkflowStatus
 from deerflow.knowledge.extraction import ExtractionService
 from deerflow.knowledge.extraction.model_client import DeterministicStructuredExtractionModel
 from deerflow.knowledge.extraction.persistence import ExtractionPersistence
@@ -25,7 +26,7 @@ from deerflow.knowledge.extraction.schemas import ChunkText, ModelExtractionRequ
 from deerflow.knowledge.extraction.validator import ExtractionValidator
 from deerflow.knowledge.ingestion.models import SourceInput
 from deerflow.knowledge.ingestion.pipeline import IngestionPipeline
-from deerflow.knowledge.models import ApprovalRequest, Chunk, Claim, ConflictGroup, ExtractionRun
+from deerflow.knowledge.models import ActionExecution, ApprovalRequest, AuditLog, Chunk, Claim, ConflictGroup, ExtractionRun
 from deerflow.knowledge.retrieval.service import RetrievalService
 from deerflow.knowledge.runtime.context import TrustedKnowledgeContext
 from deerflow.knowledge.unit_of_work import KnowledgeUnitOfWork, SessionFactory
@@ -50,6 +51,14 @@ from deerflow.knowledge.workflows import (
 
 
 class KnowledgeServiceUnavailableError(RuntimeError):
+    pass
+
+
+class ActionNotApprovedError(ValueError):
+    pass
+
+
+class ActionPayloadStaleError(ValueError):
     pass
 
 
@@ -122,7 +131,11 @@ class KnowledgeServiceProvider(Protocol):
 
     async def action_preview(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
-    async def action_execute(self, context: TrustedKnowledgeContext, approval_request_id: str) -> dict[str, Any]: ...
+    async def action_execute(self, context: TrustedKnowledgeContext, approval_request_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
+
+    async def action_execution_get(self, context: TrustedKnowledgeContext, execution_id: str) -> dict[str, Any]: ...
+
+    async def audit_history(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def validate_artifact(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -239,7 +252,13 @@ class UnconfiguredKnowledgeServiceProvider:
     async def action_preview(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         self._unavailable()
 
-    async def action_execute(self, context: TrustedKnowledgeContext, approval_request_id: str) -> dict[str, Any]:
+    async def action_execute(self, context: TrustedKnowledgeContext, approval_request_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._unavailable()
+
+    async def action_execution_get(self, context: TrustedKnowledgeContext, execution_id: str) -> dict[str, Any]:
+        self._unavailable()
+
+    async def audit_history(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         self._unavailable()
 
     async def validate_artifact(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -276,6 +295,124 @@ def _uuid(value: str, field_name: str) -> UUID:
         return UUID(str(value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} is invalid") from exc
+
+
+SUPPORTED_ACTION_TYPES = {
+    "EMAIL_DRAFT",
+    "EMAIL_SEND",
+    "CALENDAR_DRAFT",
+    "CALENDAR_CREATE",
+    "TASK_CREATE",
+    "ARTIFACT_EXPORT",
+}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _action_payload_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _normalize_action_type(value: Any) -> str:
+    action_type = str(value or "").strip().upper()
+    if action_type in {"FAKE_EMAIL", "EMAIL"}:
+        action_type = "EMAIL_SEND"
+    elif action_type in {"FAKE_CALENDAR", "CALENDAR"}:
+        action_type = "CALENDAR_CREATE"
+    elif action_type in {"FAKE_TASK", "TASK"}:
+        action_type = "TASK_CREATE"
+    if action_type not in SUPPORTED_ACTION_TYPES:
+        raise ValueError("action_type is invalid")
+    return action_type
+
+
+def _approval_action_draft(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("action_draft")
+    if raw is None:
+        raw = payload.get("payload")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("action_draft must be an object")
+    return _jsonable(raw)
+
+
+def _connector_type_for_action(action_type: str) -> str:
+    if action_type.startswith("EMAIL_"):
+        return "fake_email"
+    if action_type.startswith("CALENDAR_"):
+        return "fake_calendar"
+    if action_type == "TASK_CREATE":
+        return "fake_task"
+    if action_type == "ARTIFACT_EXPORT":
+        return "fake_artifact_export"
+    return "fake_action"
+
+
+def _safe_action_preview(action_type: str, action_draft: dict[str, Any]) -> dict[str, Any]:
+    payload = action_draft.get("payload") if isinstance(action_draft.get("payload"), dict) else action_draft
+    target = action_draft.get("target") or payload.get("to") or payload.get("attendee") or payload.get("assignee") or payload.get("artifact_id") or "fake-target"
+    title = payload.get("subject") or payload.get("title") or payload.get("summary") or payload.get("filename") or action_type.replace("_", " ").title()
+    return {
+        "action_type": action_type,
+        "connector_type": _connector_type_for_action(action_type),
+        "target": str(target),
+        "title": str(title),
+        "summary": _safe_payload_summary(action_type, action_draft),
+        "side_effect": False,
+    }
+
+
+def _safe_payload_summary(action_type: str, action_draft: dict[str, Any]) -> str:
+    payload = action_draft.get("payload") if isinstance(action_draft.get("payload"), dict) else action_draft
+    if action_type.startswith("EMAIL_"):
+        return f"Fake email action: {payload.get('subject') or 'untitled email'}"
+    if action_type.startswith("CALENDAR_"):
+        return f"Fake calendar action: {payload.get('title') or payload.get('summary') or 'untitled event'}"
+    if action_type == "TASK_CREATE":
+        return f"Fake task action: {payload.get('title') or 'untitled task'}"
+    if action_type == "ARTIFACT_EXPORT":
+        return f"Fake artifact export: {payload.get('artifact_id') or payload.get('filename') or 'artifact'}"
+    return "Fake action"
+
+
+def _action_preview_payload(action_type: str, action_draft: dict[str, Any], *, approved_hash: str | None) -> dict[str, Any]:
+    current_hash = _action_payload_hash(action_draft)
+    stale = bool(approved_hash and current_hash != approved_hash)
+    return {
+        "side_effect": False,
+        "action_type": action_type,
+        "connector_type": _connector_type_for_action(action_type),
+        "payload_hash": approved_hash or current_hash,
+        "current_payload_hash": current_hash,
+        "is_payload_stale": stale,
+        "invalidation_reason": "Action draft payload changed after approval" if stale else None,
+        "preview": _safe_action_preview(action_type, action_draft),
+    }
+
+
+def _execute_fake_action(action_type: str, action_draft: dict[str, Any]) -> dict[str, Any]:
+    mode = str(action_draft.get("fake_result") or action_draft.get("result_mode") or "").casefold()
+    if mode in {"fail", "failed", "failure"}:
+        status = ActionExecutionStatus.FAILED
+        result = {"connector_type": _connector_type_for_action(action_type), "error": "Deterministic fake adapter failure", "side_effect": False}
+    elif mode in {"unknown", "reconciliation", "reconciliation_required"}:
+        status = ActionExecutionStatus.RECONCILIATION_REQUIRED
+        result = {
+            "connector_type": _connector_type_for_action(action_type),
+            "message": "Fake adapter returned an unknown result; manual reconciliation is required",
+            "side_effect_may_have_happened": True,
+        }
+    else:
+        status = ActionExecutionStatus.SUCCEEDED
+        result = {
+            "connector_type": _connector_type_for_action(action_type),
+            "external_reference": f"fake-{uuid4()}",
+            "side_effect": "fake_only",
+        }
+    return {"status": status, "result": result}
 
 
 class DatabaseKnowledgeServiceProvider:
@@ -906,15 +1043,20 @@ class DatabaseKnowledgeServiceProvider:
             workflow = await uow.workflow_runs.get_by_id(context.workspace_id, _uuid(payload["workflow_run_id"], "workflow_run_id"))
             if workflow is None:
                 raise ValueError("WorkflowRun does not belong to workspace")
+            action_type = _normalize_action_type(payload["action_type"])
+            action_draft = _approval_action_draft(payload)
+            payload_hash = _action_payload_hash(action_draft)
+            preview = _safe_action_preview(action_type, action_draft)
             request = await uow.approval_requests.add(
                 ApprovalRequest(
                     workspace_id=context.workspace_id,
                     workflow_run_id=workflow.id,
-                    action_type=str(payload["action_type"]),
+                    action_type=action_type,
                     action_preview={
-                        "target": payload.get("target"),
-                        "payload": payload.get("payload") or {},
-                        "preview": payload.get("preview") or {},
+                        "target": payload.get("target") or action_draft.get("target"),
+                        "payload": action_draft,
+                        "preview": preview,
+                        "payload_hash": payload_hash,
                         "source_step_run_id": payload.get("source_step_run_id"),
                         "artifact_ids": payload.get("artifact_ids") or [],
                         "evidence_ids": payload.get("evidence_ids") or [],
@@ -923,22 +1065,51 @@ class DatabaseKnowledgeServiceProvider:
                     status=ApprovalStatus.AWAITING_APPROVAL if payload.get("requires_approval", True) else ApprovalStatus.APPROVED,
                 )
             )
+            await uow.audit_logs.add(
+                AuditLog(
+                    workspace_id=context.workspace_id,
+                    actor_id=context.actor_id,
+                    event_type="approval.requested",
+                    target_type="approval_request",
+                    target_id=str(request.id),
+                    payload={"action_type": action_type, "payload_hash": payload_hash, "risk_level": request.risk_level.value},
+                )
+            )
             await uow.commit()
-            return {"approval_request_id": str(request.id), "status": request.status.value}
+            return _approval_payload(request)
 
     async def approval_get(self, context: TrustedKnowledgeContext, approval_request_id: str) -> dict[str, Any]:
         async with KnowledgeUnitOfWork(self._session_factory) as uow:
             request = await uow.approval_requests.get_by_id(context.workspace_id, _uuid(approval_request_id, "approval_request_id"))
             if request is None:
                 raise ValueError("ApprovalRequest does not belong to workspace")
-            return _approval_payload(request)
+            assert uow.session is not None
+            executions = (
+                (await uow.session.execute(select(ActionExecution).where(ActionExecution.workspace_id == context.workspace_id, ActionExecution.approval_request_id == request.id).order_by(ActionExecution.created_at.desc()))).scalars().all()
+            )
+            audit_rows = await uow.audit_logs.list_for_target(context.workspace_id, "approval_request", str(request.id))
+            return _approval_payload(request, executions=list(executions), audit_rows=audit_rows)
 
     async def list_approvals(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         limit = min(int(payload.get("limit") or 50), 100)
         offset = max(int(payload.get("offset") or 0), 0)
         async with KnowledgeUnitOfWork(self._session_factory) as uow:
             rows = await uow.approval_requests.list_for_workspace(context.workspace_id, limit=limit, offset=offset)
-            return {"data": [_approval_payload(row) for row in rows], "pagination": {"limit": limit, "offset": offset}}
+            assert uow.session is not None
+            approval_ids = [row.id for row in rows]
+            executions_by_approval: dict[UUID, list[ActionExecution]] = {approval_id: [] for approval_id in approval_ids}
+            if approval_ids:
+                execution_rows = (
+                    (await uow.session.execute(select(ActionExecution).where(ActionExecution.workspace_id == context.workspace_id, ActionExecution.approval_request_id.in_(approval_ids)).order_by(ActionExecution.created_at.desc())))
+                    .scalars()
+                    .all()
+                )
+                for execution in execution_rows:
+                    executions_by_approval.setdefault(execution.approval_request_id, []).append(execution)
+            return {
+                "data": [_approval_payload(row, executions=executions_by_approval.get(row.id, [])) for row in rows],
+                "pagination": {"limit": limit, "offset": offset},
+            }
 
     async def approval_decide(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         status_by_decision = {
@@ -953,26 +1124,118 @@ class DatabaseKnowledgeServiceProvider:
             request = await uow.approval_requests.get_by_id(context.workspace_id, _uuid(payload["approval_request_id"], "approval_request_id"))
             if request is None:
                 raise ValueError("ApprovalRequest does not belong to workspace")
+            if request.status not in {ApprovalStatus.AWAITING_APPROVAL, status_by_decision[decision]}:
+                raise ValueError("ApprovalRequest decision is not allowed")
             request.status = status_by_decision[decision]
             request.decided_by = context.actor_id
             request.decided_at = datetime.now(UTC)
+            await uow.audit_logs.add(
+                AuditLog(
+                    workspace_id=context.workspace_id,
+                    actor_id=context.actor_id,
+                    event_type={"approve": "approval.approved", "reject": "approval.rejected", "cancel": "approval.cancelled"}[decision],
+                    target_type="approval_request",
+                    target_id=str(request.id),
+                    payload={"decision": decision, "reason": payload.get("reason"), "status": request.status.value},
+                )
+            )
             await uow.commit()
             return _approval_payload(request)
 
     async def action_preview(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
-        if payload.get("approval_request_id"):
-            approval = await self.approval_get(context, str(payload["approval_request_id"]))
-            return {"side_effect": False, "approval": approval}
-        return {"side_effect": False, "preview": payload.get("action_draft") or {}}
-
-    async def action_execute(self, context: TrustedKnowledgeContext, approval_request_id: str) -> dict[str, Any]:
+        if not payload.get("approval_request_id"):
+            action_draft = _approval_action_draft(payload)
+            action_type = _normalize_action_type(action_draft.get("action_type") or payload.get("action_type") or "TASK_CREATE")
+            return _action_preview_payload(action_type, action_draft, approved_hash=None)
         async with KnowledgeUnitOfWork(self._session_factory) as uow:
-            request = await uow.approval_requests.get_by_id(context.workspace_id, _uuid(approval_request_id, "approval_request_id"))
+            request = await uow.approval_requests.get_by_id(context.workspace_id, _uuid(str(payload["approval_request_id"]), "approval_request_id"))
+            if request is None:
+                raise ValueError("ApprovalRequest does not belong to workspace")
+            action_draft = _approval_action_draft(payload) if payload.get("action_draft") else dict((request.action_preview or {}).get("payload") or {})
+            return _action_preview_payload(request.action_type, action_draft, approved_hash=str((request.action_preview or {}).get("payload_hash") or ""))
+
+    async def action_execute(self, context: TrustedKnowledgeContext, approval_request_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            request = (
+                (await uow.session.execute(select(ApprovalRequest).where(ApprovalRequest.workspace_id == context.workspace_id, ApprovalRequest.id == _uuid(approval_request_id, "approval_request_id")).with_for_update())).scalars().first()
+            )
             if request is None:
                 raise ValueError("ApprovalRequest does not belong to workspace")
             if request.status != ApprovalStatus.APPROVED:
-                raise ValueError("ApprovalRequest is not approved")
-            raise KnowledgeServiceUnavailableError("Action execution adapters are not configured")
+                raise ActionNotApprovedError("ApprovalRequest is not approved")
+            approved_hash = str((request.action_preview or {}).get("payload_hash") or "")
+            action_draft = _approval_action_draft(payload or {}) if payload and payload.get("action_draft") else dict((request.action_preview or {}).get("payload") or {})
+            current_hash = _action_payload_hash(action_draft)
+            if approved_hash and current_hash != approved_hash:
+                await uow.audit_logs.add(
+                    AuditLog(
+                        workspace_id=context.workspace_id,
+                        actor_id=context.actor_id,
+                        event_type="action.payload_stale",
+                        target_type="approval_request",
+                        target_id=str(request.id),
+                        payload={"approved_payload_hash": approved_hash, "current_payload_hash": current_hash},
+                    )
+                )
+                await uow.commit()
+                raise ActionPayloadStaleError("Action payload changed after approval")
+            connector_type = _connector_type_for_action(request.action_type)
+            idempotency_key = str(action_draft.get("idempotency_key") or f"{request.id}:{approved_hash or current_hash}")
+            existing = await uow.action_executions.get_by_idempotency_key(context.workspace_id, connector_type, idempotency_key)
+            if existing is not None:
+                return _action_execution_payload(existing, request)
+            execution = await uow.action_executions.add(
+                ActionExecution(
+                    workspace_id=context.workspace_id,
+                    approval_request_id=request.id,
+                    connector_type=connector_type,
+                    idempotency_key=idempotency_key,
+                    request_payload={"action_type": request.action_type, "payload": action_draft, "payload_hash": current_hash},
+                    status=ActionExecutionStatus.RUNNING,
+                )
+            )
+            result = _execute_fake_action(request.action_type, action_draft)
+            execution.status = result["status"]
+            execution.result_payload = result["result"]
+            execution.executed_at = datetime.now(UTC)
+            await uow.audit_logs.add(
+                AuditLog(
+                    workspace_id=context.workspace_id,
+                    actor_id=context.actor_id,
+                    event_type="action.executed",
+                    target_type="action_execution",
+                    target_id=str(execution.id),
+                    payload={
+                        "approval_request_id": str(request.id),
+                        "action_type": request.action_type,
+                        "status": execution.status.value,
+                        "idempotency_key": idempotency_key,
+                    },
+                )
+            )
+            await uow.commit()
+            return _action_execution_payload(execution, request)
+
+    async def action_execution_get(self, context: TrustedKnowledgeContext, execution_id: str) -> dict[str, Any]:
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            execution = await uow.action_executions.get_by_id(context.workspace_id, _uuid(execution_id, "execution_id"))
+            if execution is None:
+                raise ValueError("ActionExecution does not belong to workspace")
+            request = await uow.approval_requests.get_by_id(context.workspace_id, execution.approval_request_id)
+            if request is None:
+                raise ValueError("ApprovalRequest does not belong to workspace")
+            return _action_execution_payload(execution, request)
+
+    async def audit_history(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
+        target_type = str(payload["target_type"])
+        target_id = str(payload["target_id"])
+        async with KnowledgeUnitOfWork(self._session_factory) as uow:
+            rows = await uow.audit_logs.list_for_target(context.workspace_id, target_type, target_id)
+            return {
+                "data": [_audit_payload(row) for row in rows],
+                "pagination": {"limit": len(rows), "offset": 0},
+            }
 
     async def validate_artifact(self, context: TrustedKnowledgeContext, payload: dict[str, Any]) -> dict[str, Any]:
         raise KnowledgeServiceUnavailableError("Artifact validation service is not configured")
@@ -1611,16 +1874,55 @@ def _read_artifact_markdown(context: TrustedKnowledgeContext, metadata: dict[str
         return ""
 
 
-def _approval_payload(request: ApprovalRequest) -> dict[str, Any]:
+def _approval_payload(request: ApprovalRequest, *, executions: list[ActionExecution] | None = None, audit_rows: list[AuditLog] | None = None) -> dict[str, Any]:
+    action_preview = _jsonable(request.action_preview or {})
+    action_payload = action_preview.get("payload") if isinstance(action_preview.get("payload"), dict) else {}
+    payload_hash = str(action_preview.get("payload_hash") or _action_payload_hash(action_payload))
+    latest_execution = executions[0] if executions else None
     return {
         "approval_request_id": str(request.id),
         "workflow_run_id": str(request.workflow_run_id),
         "action_type": request.action_type,
         "status": request.status.value,
         "risk_level": request.risk_level.value,
+        "payload_hash": payload_hash,
+        "current_payload_hash": payload_hash,
+        "is_payload_stale": False,
+        "invalidation_reason": None,
+        "payload_summary": _safe_payload_summary(request.action_type, action_payload),
         "decided_by": request.decided_by,
         "decided_at": request.decided_at.astimezone(UTC).isoformat() if request.decided_at else None,
-        "action_preview": _jsonable(request.action_preview or {}),
+        "requested_at": request.requested_at.astimezone(UTC).isoformat(),
+        "action_preview": action_preview,
+        "latest_execution": _action_execution_payload(latest_execution, request) if latest_execution else None,
+        "audit": [_audit_payload(row) for row in audit_rows] if audit_rows is not None else [],
+    }
+
+
+def _action_execution_payload(execution: ActionExecution, request: ApprovalRequest) -> dict[str, Any]:
+    return {
+        "execution_id": str(execution.id),
+        "approval_request_id": str(execution.approval_request_id),
+        "action_type": request.action_type,
+        "connector_type": execution.connector_type,
+        "idempotency_key": execution.idempotency_key,
+        "status": execution.status.value,
+        "request_payload": _jsonable(execution.request_payload or {}),
+        "result_payload": _jsonable(execution.result_payload or {}),
+        "created_at": execution.created_at.astimezone(UTC).isoformat(),
+        "executed_at": execution.executed_at.astimezone(UTC).isoformat() if execution.executed_at else None,
+    }
+
+
+def _audit_payload(row: AuditLog) -> dict[str, Any]:
+    return {
+        "audit_log_id": str(row.id),
+        "actor_id": row.actor_id,
+        "event_type": row.event_type,
+        "target_type": row.target_type,
+        "target_id": row.target_id,
+        "payload": _jsonable(row.payload or {}),
+        "created_at": row.created_at.astimezone(UTC).isoformat(),
     }
 
 

@@ -14,7 +14,7 @@ from alembic.config import Config
 from sqlalchemy import select, text
 
 from deerflow.knowledge.enums import ArtifactStalenessStatus, ArtifactValidationStatus, WorkflowStatus
-from deerflow.knowledge.models import Artifact, ArtifactEvidenceLink, Chunk, Claim, ClaimEvidenceLink, DocumentRevision, EvidenceSpan, Source, SourceSnapshot, WorkflowRun, WorkflowStepRun
+from deerflow.knowledge.models import ActionExecution, Artifact, ArtifactEvidenceLink, AuditLog, Chunk, Claim, ClaimEvidenceLink, DocumentRevision, EvidenceSpan, Source, SourceSnapshot, WorkflowRun, WorkflowStepRun
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL"),
@@ -693,6 +693,133 @@ async def test_workflow_artifact_fullstack_decision_memo_and_project_context(ful
             assert isolated_artifact.status_code == 404
         finally:
             await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_approval_fake_action_fullstack_lifecycle_idempotency_and_audit(fullstack_gateway_config, migrated_knowledge_db) -> None:
+    from app.gateway.app import create_app
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        owner_id = "approval-owner"
+        client = _client(app)
+        try:
+            workflow = await client.post(
+                "/api/knowledge/workflows",
+                json={"workflow_type": "knowledge_to_action", "input": {"objective": "Prepare fake follow-up action"}},
+                headers=_headers(owner_id),
+            )
+            assert workflow.status_code == 200
+            workflow_id = workflow.json()["workflow_run_id"]
+            advanced = await client.post(f"/api/knowledge/workflows/{workflow_id}/advance", headers=_headers(owner_id))
+            assert advanced.status_code == 200
+            assert advanced.json()["status"] == "requires_approval"
+            assert advanced.json()["steps"][2]["output_payload"]["action_draft"]["executed"] is False
+
+            action_draft = {"payload": {"title": "Follow up on staffing approval"}, "idempotency_key": "approval-success"}
+            approval = await client.post(
+                "/api/knowledge/approvals",
+                json={"workflow_run_id": workflow_id, "action_type": "TASK_CREATE", "action_draft": action_draft, "risk_level": "low"},
+                headers=_headers(owner_id),
+            )
+            assert approval.status_code == 200
+            approval_body = approval.json()
+            approval_id = approval_body["approval_request_id"]
+            assert approval_body["status"] == "awaiting_approval"
+            assert approval_body["payload_hash"]
+
+            preview = await client.post(f"/api/knowledge/actions/{approval_id}/preview", json={"action_draft": action_draft}, headers=_headers(owner_id))
+            assert preview.status_code == 200
+            assert preview.json()["side_effect"] is False
+            assert preview.json()["is_payload_stale"] is False
+            async with app.state.knowledge_provider.database.session_factory() as session:
+                assert (await session.execute(select(ActionExecution))).scalars().all() == []
+
+            approved = await client.post(f"/api/knowledge/approvals/{approval_id}/decision", json={"decision": "approve", "reason": "verified"}, headers=_headers(owner_id))
+            assert approved.status_code == 200
+            assert approved.json()["status"] == "approved"
+
+            first_execute, second_execute = await asyncio.gather(
+                client.post(f"/api/knowledge/actions/{approval_id}/execute", headers=_headers(owner_id)),
+                client.post(f"/api/knowledge/actions/{approval_id}/execute", headers=_headers(owner_id)),
+            )
+            assert first_execute.status_code == 200
+            assert second_execute.status_code == 200
+            assert first_execute.json()["status"] == "succeeded"
+            assert second_execute.json()["status"] == "succeeded"
+            assert first_execute.json()["execution_id"] == second_execute.json()["execution_id"]
+            assert first_execute.json()["connector_type"] == "fake_task"
+
+            execution_detail = await client.get(f"/api/knowledge/actions/executions/{first_execute.json()['execution_id']}", headers=_headers(owner_id))
+            assert execution_detail.status_code == 200
+            assert execution_detail.json()["status"] == "succeeded"
+
+            approvals = await client.get("/api/knowledge/approvals", headers=_headers(owner_id))
+            assert approvals.status_code == 200
+            persisted = next(item for item in approvals.json()["data"] if item["approval_request_id"] == approval_id)
+            assert persisted["status"] == "approved"
+            assert persisted["latest_execution"]["status"] == "succeeded"
+
+            rejected = await _create_approval(client, workflow_id, "EMAIL_SEND", {"payload": {"subject": "Do not send"}, "idempotency_key": "approval-reject"}, owner_id)
+            reject_decision = await client.post(f"/api/knowledge/approvals/{rejected}/decision", json={"decision": "reject"}, headers=_headers(owner_id))
+            assert reject_decision.status_code == 200
+            rejected_execute = await client.post(f"/api/knowledge/actions/{rejected}/execute", headers=_headers(owner_id))
+            assert rejected_execute.status_code == 409
+            assert rejected_execute.json()["detail"]["error"]["code"] == "action_not_approved"
+
+            stale = await _create_approval(client, workflow_id, "CALENDAR_CREATE", {"payload": {"title": "Original"}, "idempotency_key": "approval-stale"}, owner_id)
+            stale_approve = await client.post(f"/api/knowledge/approvals/{stale}/decision", json={"decision": "approve"}, headers=_headers(owner_id))
+            assert stale_approve.status_code == 200
+            stale_execute = await client.post(
+                f"/api/knowledge/actions/{stale}/execute",
+                json={"action_draft": {"payload": {"title": "Changed"}, "idempotency_key": "approval-stale"}},
+                headers=_headers(owner_id),
+            )
+            assert stale_execute.status_code == 409
+            assert stale_execute.json()["detail"]["error"]["code"] == "action_payload_stale"
+
+            failed = await _approved_action(client, workflow_id, owner_id, "EMAIL_SEND", {"payload": {"subject": "Fail"}, "fake_result": "fail", "idempotency_key": "approval-fail"})
+            failed_execute = await client.post(f"/api/knowledge/actions/{failed}/execute", headers=_headers(owner_id))
+            assert failed_execute.status_code == 200
+            assert failed_execute.json()["status"] == "failed"
+
+            unknown = await _approved_action(client, workflow_id, owner_id, "ARTIFACT_EXPORT", {"payload": {"artifact_id": "artifact-1"}, "fake_result": "unknown", "idempotency_key": "approval-unknown"})
+            unknown_execute = await client.post(f"/api/knowledge/actions/{unknown}/execute", headers=_headers(owner_id))
+            assert unknown_execute.status_code == 200
+            assert unknown_execute.json()["status"] == "reconciliation_required"
+
+            isolated = await client.get(f"/api/knowledge/approvals/{approval_id}", headers=_headers("approval-other-owner"))
+            assert isolated.status_code == 404
+
+            audit = await client.get(f"/api/knowledge/audit?target_type=approval_request&target_id={approval_id}", headers=_headers(owner_id))
+            assert audit.status_code == 200
+            assert {row["event_type"] for row in audit.json()["data"]} >= {"approval.requested", "approval.approved"}
+
+            async with app.state.knowledge_provider.database.session_factory() as session:
+                executions = (await session.execute(select(ActionExecution))).scalars().all()
+                audit_rows = (await session.execute(select(AuditLog))).scalars().all()
+                assert len({execution.idempotency_key for execution in executions}) == len(executions)
+                assert len(executions) == 3
+                assert audit_rows
+        finally:
+            await client.aclose()
+
+
+async def _create_approval(client: httpx.AsyncClient, workflow_id: str, action_type: str, action_draft: dict, owner_id: str) -> str:
+    response = await client.post(
+        "/api/knowledge/approvals",
+        json={"workflow_run_id": workflow_id, "action_type": action_type, "action_draft": action_draft, "risk_level": "medium"},
+        headers=_headers(owner_id),
+    )
+    assert response.status_code == 200
+    return response.json()["approval_request_id"]
+
+
+async def _approved_action(client: httpx.AsyncClient, workflow_id: str, owner_id: str, action_type: str, action_draft: dict) -> str:
+    approval_id = await _create_approval(client, workflow_id, action_type, action_draft, owner_id)
+    decision = await client.post(f"/api/knowledge/approvals/{approval_id}/decision", json={"decision": "approve"}, headers=_headers(owner_id))
+    assert decision.status_code == 200
+    return approval_id
 
 
 @pytest.mark.asyncio

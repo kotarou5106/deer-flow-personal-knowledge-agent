@@ -133,4 +133,66 @@ describe("Knowledge client", () => {
       }),
     );
   });
+
+  test("creates approvals and executes fake actions through formal contracts", async () => {
+    const transport = transportReturning({
+      approval_request_id: "approval-1",
+      status: "awaiting_approval",
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(
+      client.createApproval({
+        workflow_run_id: "workflow-1",
+        action_type: "TASK_CREATE",
+        action_draft: { payload: { title: "Follow up" } },
+      }),
+    ).resolves.toMatchObject({ approval_request_id: "approval-1" });
+    expect(transport.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/approvals",
+        body: expect.objectContaining({ action_type: "TASK_CREATE" }),
+      }),
+    );
+
+    await client.previewAction("approval-1", {
+      action_draft: { payload: { title: "Follow up" } },
+    });
+    expect(transport.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/actions/approval-1/preview",
+      }),
+    );
+
+    await client.executeAction("approval-1", {
+      action_draft: { payload: { title: "Follow up" } },
+    });
+    expect(transport.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/actions/approval-1/execute",
+        body: { action_draft: { payload: { title: "Follow up" } } },
+      }),
+    );
+  });
+
+  test("rejects trusted identity fields from approval and action payloads", async () => {
+    const client = createKnowledgeClient(transportReturning({}));
+
+    await expect(
+      client.createApproval({
+        workflow_run_id: "workflow-1",
+        action_type: "TASK_CREATE",
+        action_draft: { workspace_id: "workspace-1" },
+      }),
+    ).rejects.toThrow("trusted field");
+
+    await expect(
+      client.executeAction("approval-1", {
+        action_draft: { actor_id: "actor-1" },
+      }),
+    ).rejects.toThrow("trusted field");
+  });
 });

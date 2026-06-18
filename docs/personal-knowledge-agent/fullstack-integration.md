@@ -19,7 +19,10 @@ This stage connects the Knowledge Workspace production UI to the project-owned G
 - Deterministic workflow handlers cover the current workflow types without external model calls: Topic Dossier, Project Context Pack, Reading Synthesis, Decision Memo, Meeting Preparation, Knowledge Update Review, and Knowledge-to-Action draft creation.
 - Workflow artifacts can be generated and retrieved through `POST /api/knowledge/workflows/{id}/artifacts`, `GET /api/knowledge/artifacts/{id}`, and `GET /api/knowledge/artifacts/{id}/evidence-links`.
 - Decision Memo and Project Context Pack artifacts include markdown preview content, workflow origin, stored JSON payload, and ArtifactEvidenceLink provenance back to evidence span, chunk, revision, source, and claim records.
-- Knowledge-to-Action remains a draft-only workflow boundary. It produces a non-executed action draft and does not integrate approval or action execution in this stage.
+- Knowledge-to-Action remains a draft boundary until explicit approval. It produces a non-executed action draft; `APPROVED` only means execution is allowed, not that execution has succeeded.
+- Approval and fake action execution are now Gateway-backed in production mode: `POST /api/knowledge/approvals`, list/detail/decision routes, action preview, action execute, action execution detail, and related audit history.
+- All supported action types execute through deterministic fake adapters only: `EMAIL_DRAFT`, `EMAIL_SEND`, `CALENDAR_DRAFT`, `CALENDAR_CREATE`, `TASK_CREATE`, and `ARTIFACT_EXPORT`.
+- Server-side payload hash validation rejects stale action drafts after approval, idempotency prevents repeated fake side effects, and unknown adapter outcomes are represented as `RECONCILIATION_REQUIRED`.
 
 ## Frontend Runtime Fixes
 
@@ -30,6 +33,7 @@ This stage connects the Knowledge Workspace production UI to the project-owned G
 - Error normalization preserves ordinary JavaScript error messages to keep local diagnostics actionable.
 - Production Workflow UI uses the formal Gateway contracts for create, advance, pause, resume, retry, and artifact generation.
 - Production Artifact detail renders Gateway markdown as text and surfaces provenance, workflow origin, validation, staleness, and evidence-link counts without fabricating unavailable data.
+- Production Approvals UI lists real Gateway approval records, previews safe action summaries without side effects, approves/rejects through Gateway decisions, executes fake actions through the formal action endpoint, and shows persisted execution and audit state after refresh.
 
 ## Verification
 
@@ -48,7 +52,16 @@ This stage connects the Knowledge Workspace production UI to the project-owned G
 - `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build`
 - Microsoft Edge smoke against local Gateway + Next dev: UI import accepted, job succeeded, source appeared, search returned the ingested evidence.
 - In-app browser smoke against local Gateway + Next dev in production Knowledge mode: Workflows page created a Decision Memo workflow, advanced it to `COMPLETED`, generated the artifact through the formal endpoint, and Artifacts page rendered workflow origin plus markdown preview without console errors.
+- Approval/Fake Action focused backend: `uv run pytest tests/knowledge -k "approval or action or execution or gateway" -q` -> `47 passed, 6 skipped`.
+- Approval/Fake Action live PostgreSQL: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py::test_approval_fake_action_fullstack_lifecycle_idempotency_and_audit -q` -> `1 passed`.
+- Knowledge live full-stack PostgreSQL after Approval/Fake Action integration: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `6 passed`.
+- Microsoft Edge smoke against local Gateway + Next dev in production Knowledge mode: Approvals page loaded real Gateway data, previewed a fake task action, approved it, executed the fake adapter, showed `APPROVED` separately from `SUCCEEDED`, survived page refresh, and remained usable at a narrow viewport.
+- Frontend Knowledge focused tests: `npx pnpm@10.26.2 test -- tests/unit/core/knowledge` -> `339 passed`.
+- Frontend full unit suite: `npx pnpm@10.26.2 test` -> `339 passed`.
+- Backend Knowledge suite: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped`.
+- Backend full lint: `make lint` -> passed.
+- Backend full test: `make test` -> `4555 passed, 32 skipped`.
 
 ## Remaining Gaps
 
-The remaining gaps are product/API scope, not external service requirements. See `frontend-backend-contract-gaps.md` for the detailed contract table.
+The remaining gaps are product/API scope, not external service requirements. Real Gmail, Calendar, third-party task systems, and model-backed external actions are still not connected. See `frontend-backend-contract-gaps.md` for the detailed contract table.

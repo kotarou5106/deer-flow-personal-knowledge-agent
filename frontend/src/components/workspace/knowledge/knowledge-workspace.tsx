@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ActivityIcon,
   AlertTriangleIcon,
@@ -414,7 +414,7 @@ function ProductionGatewayView({
   if (view === "conflicts") return <ConflictsView dataset={dataset} onOpenCitation={onOpenCitation} />;
   if (view === "workflows") return <WorkflowsView dataset={dataset} demoMode={false} onRefresh={() => setReloadToken((value) => value + 1)} />;
   if (view === "artifacts") return <ArtifactsView dataset={dataset} onOpenCitation={onOpenCitation} />;
-  if (view === "approvals") return <ApprovalsView dataset={dataset} demoMode={false} />;
+  if (view === "approvals") return <ApprovalsView dataset={dataset} demoMode={false} onRefresh={() => setReloadToken((value) => value + 1)} />;
   return <ActivityView dataset={dataset} />;
 }
 
@@ -958,19 +958,30 @@ function mapArtifactCitations(raw: Record<string, unknown>): KnowledgeCitation[]
 
 function mapApproval(raw: Record<string, unknown>): KnowledgeApproval {
   const preview = asRecord(raw.action_preview);
+  const latestExecution = asRecord(raw.latest_execution);
+  const executionStatus = readString(latestExecution, "status").toUpperCase();
+  const audit = readArray(raw, "audit").map((item) => {
+    const row = asRecord(item);
+    const eventType = readString(row, "event_type");
+    const createdAt = readString(row, "created_at");
+    return `${eventType || "audit"}${createdAt ? ` at ${formatKnowledgeDate(createdAt)}` : ""}`;
+  });
   return {
     id: readString(raw, "approval_request_id", "id"),
     workflowId: readString(raw, "workflow_run_id"),
     actionType: readString(raw, "action_type"),
-    payloadSummary: readString(preview, "summary", "target") || "Action preview available",
+    payloadSummary: readString(raw, "payload_summary") || readString(asRecord(preview.preview), "summary", "target") || "Action preview available",
     payloadHash: readString(raw, "payload_hash"),
+    currentPayloadHash: readString(raw, "current_payload_hash") || undefined,
+    isPayloadStale: Boolean(raw.is_payload_stale),
+    invalidationReason: readString(raw, "invalidation_reason") || undefined,
     requestedBy: "Gateway",
     riskLevel: (readString(raw, "risk_level").toUpperCase() as RiskLevel) || "LOW",
     status: (readString(raw, "status").toUpperCase() as ApprovalStatus) || "DRAFT",
-    executionStatus: "PENDING",
+    executionStatus: executionStatus === "SUCCEEDED" || executionStatus === "FAILED" || executionStatus === "RECONCILIATION_REQUIRED" ? executionStatus : "PENDING",
     createdAt: readString(raw, "created_at", "requested_at"),
     decidedAt: readString(raw, "decided_at") || undefined,
-    audit: ["Loaded from Gateway approval contract."],
+    audit: audit.length ? audit : ["Loaded from Gateway approval contract."],
   };
 }
 
@@ -1646,7 +1657,42 @@ function ArtifactsView({ dataset, onOpenCitation }: { dataset: KnowledgeWorkspac
   );
 }
 
-function ApprovalsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean }) {
+function ApprovalsView({ dataset, demoMode = true, onRefresh }: { dataset: KnowledgeWorkspaceDataset; demoMode?: boolean; onRefresh?: () => void }) {
+  const client = useKnowledgeClient();
+  const queryClient = useQueryClient();
+  const [previewByApproval, setPreviewByApproval] = useState<Record<string, string>>({});
+  const mutation = useMutation({
+    mutationFn: async (action: { kind: "preview" | "approve" | "reject" | "execute"; approval: KnowledgeApproval }) => {
+      if (demoMode) return { demo: true };
+      if (action.kind === "preview") return client.previewAction(action.approval.id, {});
+      if (action.kind === "approve") return client.decideApproval(action.approval.id, { decision: "approve" });
+      if (action.kind === "reject") return client.decideApproval(action.approval.id, { decision: "reject" });
+      return client.executeAction(action.approval.id);
+    },
+    onSuccess: (result, action) => {
+      if (action.kind === "preview") {
+        const preview = asRecord(result);
+        const innerPreview = asRecord(preview.preview);
+        setPreviewByApproval((current) => ({
+          ...current,
+          [action.approval.id]: readString(innerPreview, "summary", "title") || readString(preview, "invalidation_reason") || "Preview loaded",
+        }));
+        toast.success("Action preview loaded");
+        return;
+      }
+      toast.success(action.kind === "execute" ? "Fake action execution recorded" : "Approval decision recorded");
+      void queryClient.invalidateQueries({ queryKey: ["knowledge"] });
+      onRefresh?.();
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : "Knowledge action failed");
+    },
+  });
+
+  if (dataset.approvals.length === 0) {
+    return <EmptyState title="No approvals" />;
+  }
+
   return (
     <div className="grid gap-4">
       <Alert>
@@ -1661,12 +1707,21 @@ function ApprovalsView({ dataset, demoMode = true }: { dataset: KnowledgeWorkspa
           <CardHeader><CardTitle>{approval.actionType}</CardTitle><CardDescription>{approval.payloadSummary}</CardDescription></CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap gap-2"><StatusBadge value={approval.status} /><StatusBadge value={approval.executionStatus ?? "PENDING"} /><RiskBadge risk={approval.riskLevel} /></div>
-            <div className="grid gap-2 md:grid-cols-3"><Meta label="Payload hash" value={approval.payloadHash} /><Meta label="Requested by" value={approval.requestedBy} /><Meta label="Created" value={formatKnowledgeDate(approval.createdAt)} /></div>
+            <div className="grid gap-2 md:grid-cols-3"><Meta label="Payload hash" value={approval.payloadHash} /><Meta label="Current hash" value={approval.currentPayloadHash ?? approval.payloadHash} /><Meta label="Created" value={formatKnowledgeDate(approval.createdAt)} /></div>
+            {approval.isPayloadStale ? (
+              <Alert variant="destructive">
+                <CircleAlertIcon className="size-4" />
+                <AlertTitle>Payload invalidated</AlertTitle>
+                <AlertDescription>{approval.invalidationReason ?? "Action draft changed after approval."}</AlertDescription>
+              </Alert>
+            ) : null}
+            {previewByApproval[approval.id] ? <div className="rounded-md border bg-muted/40 p-3 text-sm">{previewByApproval[approval.id]}</div> : null}
             <div className="rounded-md border p-3 text-sm">{approval.audit.map((item) => <div key={item}>{item}</div>)}</div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" disabled={!demoMode || approval.status !== "AWAITING_APPROVAL"} onClick={() => toast.success("Demo approval recorded")}>Approve</Button>
-              <Button size="sm" variant="outline" disabled={!demoMode || approval.status !== "AWAITING_APPROVAL"} onClick={() => toast.info("Demo rejection recorded")}>Reject</Button>
-              <Button size="sm" variant="outline" disabled={approval.status !== "APPROVED" || approval.executionStatus === "SUCCEEDED"}>Execute fake action</Button>
+              <Button size="sm" variant="outline" disabled={mutation.isPending} onClick={() => demoMode ? toast.info("Demo preview loaded") : mutation.mutate({ kind: "preview", approval })}>Preview</Button>
+              <Button size="sm" disabled={mutation.isPending || approval.status !== "AWAITING_APPROVAL"} onClick={() => demoMode ? toast.success("Demo approval recorded") : mutation.mutate({ kind: "approve", approval })}>Approve</Button>
+              <Button size="sm" variant="outline" disabled={mutation.isPending || approval.status !== "AWAITING_APPROVAL"} onClick={() => demoMode ? toast.info("Demo rejection recorded") : mutation.mutate({ kind: "reject", approval })}>Reject</Button>
+              <Button size="sm" variant="outline" disabled={mutation.isPending || approval.status !== "APPROVED" || approval.executionStatus === "SUCCEEDED"} onClick={() => demoMode ? toast.success("Demo fake action executed") : mutation.mutate({ kind: "execute", approval })}>Execute fake action</Button>
             </div>
           </CardContent>
         </Card>

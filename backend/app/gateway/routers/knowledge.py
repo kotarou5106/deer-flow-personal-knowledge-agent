@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.gateway.deps import get_knowledge_job_service, get_knowledge_provider, get_trusted_knowledge_context
 from deerflow.knowledge.jobs.models import KnowledgeJobType
 from deerflow.knowledge.jobs.service import event_to_dict, job_to_dict
-from deerflow.knowledge.runtime.provider import KnowledgeServiceUnavailableError
+from deerflow.knowledge.runtime.provider import ActionNotApprovedError, ActionPayloadStaleError, KnowledgeServiceUnavailableError
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -73,6 +73,36 @@ class WorkflowArtifactCreateRequest(StrictModel):
     idempotency_key: str | None = Field(default=None, max_length=256)
 
 
+def _reject_trusted_identity(value: Any, *, path: str = "payload") -> None:
+    trusted_fields = {"workspace_id", "user_id", "thread_id", "actor_id", "_trusted_user_id", "_trusted_actor_id", "_trusted_thread_id", "_trusted_storage_root"}
+    if isinstance(value, dict):
+        forbidden = trusted_fields & set(value)
+        if forbidden:
+            raise ValueError(f"{path} cannot include trusted identity fields")
+        for key, item in value.items():
+            _reject_trusted_identity(item, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_trusted_identity(item, path=f"{path}[{index}]")
+
+
+class ApprovalCreateRequest(StrictModel):
+    workflow_run_id: UUID
+    action_type: Literal["EMAIL_DRAFT", "EMAIL_SEND", "CALENDAR_DRAFT", "CALENDAR_CREATE", "TASK_CREATE", "ARTIFACT_EXPORT"]
+    action_draft: dict[str, Any] = Field(default_factory=dict)
+    target: str | None = Field(default=None, max_length=512)
+    risk_level: Literal["low", "medium", "high"] = "low"
+    source_step_run_id: UUID | None = None
+    artifact_ids: list[UUID] = Field(default_factory=list)
+    evidence_ids: list[UUID] = Field(default_factory=list)
+    requires_approval: bool = True
+
+    @model_validator(mode="after")
+    def reject_trusted_identity(self) -> ApprovalCreateRequest:
+        _reject_trusted_identity(self.action_draft, path="action_draft")
+        return self
+
+
 class ApprovalDecisionRequest(StrictModel):
     decision: Literal["approve", "reject", "cancel"]
     reason: str | None = None
@@ -80,6 +110,21 @@ class ApprovalDecisionRequest(StrictModel):
 
 class ActionPreviewRequest(StrictModel):
     action_draft: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_trusted_identity(self) -> ActionPreviewRequest:
+        _reject_trusted_identity(self.action_draft, path="action_draft")
+        return self
+
+
+class ActionExecuteRequest(StrictModel):
+    action_draft: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def reject_trusted_identity(self) -> ActionExecuteRequest:
+        if self.action_draft is not None:
+            _reject_trusted_identity(self.action_draft, path="action_draft")
+        return self
 
 
 def _limit(limit: int) -> int:
@@ -411,6 +456,14 @@ async def list_approvals(request: Request, limit: int = Query(default=50, ge=1, 
         raise _translate_error(exc) from exc
 
 
+@router.post("/approvals")
+async def create_approval(body: ApprovalCreateRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).approval_request(get_trusted_knowledge_context(request), body.model_dump(mode="json"))  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.get("/approvals/{approval_id}")
 async def get_approval(approval_id: str, request: Request) -> dict[str, Any]:
     try:
@@ -439,11 +492,33 @@ async def preview_action(approval_id: str, body: ActionPreviewRequest, request: 
 
 
 @router.post("/actions/{approval_id}/execute")
-async def execute_action(approval_id: str, request: Request) -> dict[str, Any]:
+async def execute_action(approval_id: str, request: Request, body: ActionExecuteRequest | None = None) -> dict[str, Any]:
     try:
-        return await get_knowledge_provider(request).action_execute(get_trusted_knowledge_context(request), approval_id)
-    except ValueError as exc:
+        return await get_knowledge_provider(request).action_execute(
+            get_trusted_knowledge_context(request),
+            approval_id,
+            body.model_dump() if body is not None else None,
+        )
+    except ActionNotApprovedError as exc:
         raise _error(409, "action_not_approved", "Action is not approved") from exc
+    except ActionPayloadStaleError as exc:
+        raise _error(409, "action_payload_stale", "Action payload changed after approval") from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/actions/executions/{execution_id}")
+async def get_action_execution(execution_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).action_execution_get(get_trusted_knowledge_context(request), execution_id)  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/audit")
+async def get_audit_history(target_type: str, target_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).audit_history(get_trusted_knowledge_context(request), {"target_type": target_type, "target_id": target_id})  # type: ignore[attr-defined]
     except Exception as exc:
         raise _translate_error(exc) from exc
 

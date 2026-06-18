@@ -114,7 +114,29 @@ export type ApprovalDecisionInput = {
   reason?: string | null;
 };
 
+export type ApprovalCreateInput = {
+  workflow_run_id: string;
+  action_type:
+    | "EMAIL_DRAFT"
+    | "EMAIL_SEND"
+    | "CALENDAR_DRAFT"
+    | "CALENDAR_CREATE"
+    | "TASK_CREATE"
+    | "ARTIFACT_EXPORT";
+  action_draft?: Record<string, unknown>;
+  target?: string | null;
+  risk_level?: "low" | "medium" | "high";
+  source_step_run_id?: string | null;
+  artifact_ids?: string[];
+  evidence_ids?: string[];
+  requires_approval?: boolean;
+};
+
 export type ActionPreviewInput = {
+  action_draft?: Record<string, unknown>;
+};
+
+export type ActionExecuteInput = {
   action_draft?: Record<string, unknown>;
 };
 
@@ -256,6 +278,10 @@ export type KnowledgeClient = {
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<UnknownListEnvelope>;
+  createApproval: (
+    input: ApprovalCreateInput,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   getApproval: (
     approvalId: string,
     options?: KnowledgeRequestOptions,
@@ -272,8 +298,17 @@ export type KnowledgeClient = {
   ) => Promise<Record<string, unknown>>;
   executeAction: (
     approvalId: string,
+    input?: ActionExecuteInput,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
+  getActionExecution: (
+    executionId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  listAudit: (
+    target: { target_type: string; target_id: string },
+    options?: KnowledgeRequestOptions,
+  ) => Promise<UnknownListEnvelope>;
 };
 
 export type KnowledgeRequestOptions = {

@@ -6,8 +6,10 @@ import {
   knowledgeJobSchema,
   unknownListEnvelopeSchema,
   unknownRecordSchema,
+  type ActionExecuteInput,
   type ActionPreviewInput,
   type AnalysisCreateInput,
+  type ApprovalCreateInput,
   type ApprovalDecisionInput,
   type IngestionCreateInput,
   type KnowledgeUpdateReportInput,
@@ -405,6 +407,19 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async createApproval(input: ApprovalCreateInput, options) {
+      assertNoTrustedFields(input);
+      if (input.action_draft) assertNoTrustedFields(input.action_draft);
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/approvals",
+          body: input,
+          ...options,
+        }),
+      );
+    },
     async getApproval(approvalId, options) {
       return parseResponse(
         unknownRecordSchema,
@@ -427,6 +442,7 @@ export function createKnowledgeClient(
       );
     },
     async previewAction(approvalId, input: ActionPreviewInput, options) {
+      if (input.action_draft) assertNoTrustedFields(input.action_draft);
       return parseResponse(
         unknownRecordSchema,
         await transport.request({
@@ -437,12 +453,35 @@ export function createKnowledgeClient(
         }),
       );
     },
-    async executeAction(approvalId, options) {
+    async executeAction(approvalId, input?: ActionExecuteInput, options?: KnowledgeRequestOptions) {
+      if (input?.action_draft) assertNoTrustedFields(input.action_draft);
       return parseResponse(
         unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: `/actions/${encodeURIComponent(approvalId)}/execute`,
+          body: input ? { action_draft: input.action_draft ?? null } : undefined,
+          ...options,
+        }),
+      );
+    },
+    async getActionExecution(executionId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: `/actions/executions/${encodeURIComponent(executionId)}`,
+          ...options,
+        }),
+      );
+    },
+    async listAudit(target, options) {
+      return parseResponse(
+        unknownListEnvelopeSchema,
+        await transport.request({
+          method: "GET",
+          path: "/audit",
+          query: target,
           ...options,
         }),
       );

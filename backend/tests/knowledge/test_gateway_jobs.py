@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.testclient import TestClient
 
-from app.gateway.routers.knowledge import AnalysisCreateRequest, IngestionCreateRequest, KnowledgeUpdateReportRequest, RevisionCompareRequest, WorkflowCreateRequest
+from app.gateway.routers.knowledge import ActionExecuteRequest, ActionPreviewRequest, AnalysisCreateRequest, ApprovalCreateRequest, IngestionCreateRequest, KnowledgeUpdateReportRequest, RevisionCompareRequest, WorkflowCreateRequest
 from deerflow.knowledge.jobs import KnowledgeJobService, KnowledgeJobWorker, NonRetryableKnowledgeJobError
 from deerflow.knowledge.jobs.models import KnowledgeJob, KnowledgeJobEvent, KnowledgeJobStatus, KnowledgeJobType
 from deerflow.knowledge.jobs.repository import KnowledgeJobRepository, utc_now
@@ -76,6 +76,25 @@ def test_workflow_schema_rejects_nested_client_trusted_fields() -> None:
         )
 
 
+def test_approval_schema_rejects_nested_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        ApprovalCreateRequest(
+            workflow_run_id=uuid4(),
+            action_type="EMAIL_SEND",
+            action_draft={"payload": {"subject": "Ship", "user_id": "attacker"}},
+        )
+
+
+def test_action_preview_schema_rejects_nested_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        ActionPreviewRequest(action_draft={"workspace_id": str(uuid4())})
+
+
+def test_action_execute_schema_rejects_nested_client_trusted_fields() -> None:
+    with pytest.raises(ValidationError):
+        ActionExecuteRequest(action_draft={"actor_id": "attacker"})
+
+
 def test_gateway_registers_knowledge_routes() -> None:
     from app.gateway.app import create_app
 
@@ -97,6 +116,12 @@ def test_gateway_registers_knowledge_routes() -> None:
     assert "/api/knowledge/workflows/{workflow_run_id}/retry" in paths
     assert "/api/knowledge/workflows/{workflow_run_id}/artifacts" in paths
     assert "/api/knowledge/artifacts/{artifact_id}/evidence-links" in paths
+    assert "/api/knowledge/approvals" in paths
+    assert "/api/knowledge/approvals/{approval_id}/decision" in paths
+    assert "/api/knowledge/actions/{approval_id}/preview" in paths
+    assert "/api/knowledge/actions/{approval_id}/execute" in paths
+    assert "/api/knowledge/actions/executions/{execution_id}" in paths
+    assert "/api/knowledge/audit" in paths
 
 
 def _knowledge_headers() -> dict[str, str]:
@@ -198,8 +223,23 @@ class _FakeGatewayProvider:
     async def list_artifact_evidence_links(self, context, artifact_id):
         return {"data": [{"artifact_id": artifact_id, "usage_type": "direct_evidence"}]}
 
-    async def action_execute(self, context, approval_request_id):
-        raise ValueError("ApprovalRequest is not approved")
+    async def approval_request(self, context, payload):
+        assert "workspace_id" not in payload["action_draft"]
+        return {"approval_request_id": "approval-1", "status": "awaiting_approval", "payload_hash": "hash-1"}
+
+    async def action_preview(self, context, payload):
+        return {"side_effect": False, "approval_request_id": payload["approval_request_id"], "is_payload_stale": False}
+
+    async def action_execute(self, context, approval_request_id, payload=None):
+        from deerflow.knowledge.runtime.provider import ActionNotApprovedError
+
+        raise ActionNotApprovedError("ApprovalRequest is not approved")
+
+    async def action_execution_get(self, context, execution_id):
+        return {"execution_id": execution_id, "status": "succeeded"}
+
+    async def audit_history(self, context, payload):
+        return {"data": [{"target_type": payload["target_type"], "target_id": payload["target_id"]}], "pagination": {"limit": 1, "offset": 0}}
 
     async def analyze(self, context, payload):
         assert "workspace_id" not in payload
@@ -374,6 +414,37 @@ def test_gateway_artifact_evidence_links_use_formal_provider_contract(monkeypatc
 
     assert response.status_code == 200
     assert response.json()["data"] == [{"artifact_id": "artifact-1", "usage_type": "direct_evidence"}]
+
+
+def test_gateway_approval_action_and_audit_use_formal_provider_contract(monkeypatch) -> None:
+    client = _client_with_state(monkeypatch, job_service=_FakeGatewayJobService(), provider=_FakeGatewayProvider())
+
+    created = client.post(
+        "/api/knowledge/approvals",
+        json={
+            "workflow_run_id": str(uuid4()),
+            "action_type": "TASK_CREATE",
+            "action_draft": {"payload": {"title": "Follow up"}},
+            "risk_level": "low",
+        },
+        headers=_knowledge_headers(),
+    )
+    preview = client.post(
+        "/api/knowledge/actions/approval-1/preview",
+        json={"action_draft": {"payload": {"title": "Follow up"}}},
+        headers=_knowledge_headers(),
+    )
+    execution = client.get("/api/knowledge/actions/executions/execution-1", headers=_knowledge_headers())
+    audit = client.get("/api/knowledge/audit?target_type=approval_request&target_id=approval-1", headers=_knowledge_headers())
+
+    assert created.status_code == 200
+    assert created.json()["approval_request_id"] == "approval-1"
+    assert preview.status_code == 200
+    assert preview.json()["side_effect"] is False
+    assert execution.status_code == 200
+    assert execution.json()["status"] == "succeeded"
+    assert audit.status_code == 200
+    assert audit.json()["data"][0]["target_id"] == "approval-1"
 
 
 def test_gateway_unconfigured_job_api_returns_structured_service_not_configured(monkeypatch) -> None:

@@ -220,6 +220,9 @@ export type KnowledgeApproval = {
   actionType: string;
   payloadSummary: string;
   payloadHash: string;
+  currentPayloadHash?: string;
+  isPayloadStale?: boolean;
+  invalidationReason?: string;
   requestedBy: string;
   riskLevel: RiskLevel;
   status: ApprovalStatus;

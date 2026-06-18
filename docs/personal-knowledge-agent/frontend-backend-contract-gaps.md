@@ -1,6 +1,6 @@
 # Frontend Backend Contract Gaps
 
-The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model, ingestion/search, workflow, and artifact vertical slices are now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
+The Knowledge Workspace UI only calls or models formal Gateway contracts. The read-model, ingestion/search, workflow, artifact, approval, and fake action vertical slices are now Gateway-backed in production mode. Demo data still fills the full visual workspace, while production mode keeps the following incomplete surfaces conservative.
 
 ## Completed In This Integration Stage
 
@@ -23,6 +23,14 @@ The Knowledge Workspace UI only calls or models formal Gateway contracts. The re
 - `POST /api/knowledge/workflows/{workflow_run_id}/artifacts`
 - `GET /api/knowledge/artifacts/{artifact_id}`
 - `GET /api/knowledge/artifacts/{artifact_id}/evidence-links`
+- `POST /api/knowledge/approvals`
+- `GET /api/knowledge/approvals`
+- `GET /api/knowledge/approvals/{approval_id}`
+- `POST /api/knowledge/approvals/{approval_id}/decision`
+- `POST /api/knowledge/actions/{approval_id}/preview`
+- `POST /api/knowledge/actions/{approval_id}/execute`
+- `GET /api/knowledge/actions/executions/{execution_id}`
+- `GET /api/knowledge/audit?target_type=&target_id=`
 
 ## Workflow / Artifact Status
 
@@ -30,7 +38,7 @@ Production Workflow UI now calls the formal Gateway contracts for create, advanc
 
 Artifact detail now includes markdown preview text, workflow origin, staleness/validation state, and evidence links. Evidence links include artifact-evidence link IDs plus source, revision, chunk, evidence span, and claim provenance where available.
 
-Knowledge-to-Action is intentionally draft-only in this stage. It can create a non-executed action draft, but approval routing and action execution remain out of scope.
+Knowledge-to-Action is intentionally draft-first. Approval and fake action execution are now connected, but `APPROVED` is explicitly distinct from `SUCCEEDED`: approval authorizes execution, while action execution records the fake adapter result. Payload hash invalidation, idempotent execution, deterministic failure, and `RECONCILIATION_REQUIRED` are Gateway-backed. Real Gmail, Calendar, task, and export integrations remain out of scope.
 
 | Page | Needed Capability | Existing Domain Service / Tool | Missing Gateway Endpoint | Suggested Contract | Priority |
 | --- | --- | --- | --- | --- | --- |
@@ -42,8 +50,8 @@ Knowledge-to-Action is intentionally draft-only in this stage. It can create a n
 | Conflicts | Resolve or annotate conflict | no formal mutation exposed | `POST /api/knowledge/conflicts/{id}/decision` | `{decision, rationale}` with audit record | Medium |
 | Workflows | Per-step partial execution controls and manual parameter edits | workflow engine | No formal endpoint | Future mutation contract for a specific step run | Low |
 | Artifacts | Download/export formats beyond markdown preview and stored JSON payload | artifact storage service | Dedicated download/export route | File response or signed project-owned download URL | Medium |
-| Approvals | Payload invalidation visibility | approval/action services | Extend approval detail | `{payload_hash,current_payload_hash,is_payload_stale}` | High |
-| Approvals | Execution reconciliation status detail | action execution model | Extend action execute/detail response | `{execution_status,result,audit,reconciliation_required_reason}` | High |
-| Activity | Unified audit/activity log beyond source/job events | audit model exists; activity route currently jobs/source-focused | Extend `GET /api/knowledge/activity` or add `GET /api/knowledge/audit` | cursor-paginated events with safe summaries | Medium |
+| Approvals | Real external connector dispatch after approval | fake action adapters only | Real connector endpoints intentionally absent | Future provider-specific connector contracts with explicit OAuth/account binding | High |
+| Approvals | Rich reconciliation resolution workflow | action execution model records `RECONCILIATION_REQUIRED` | Resolution mutation intentionally absent | `POST /api/knowledge/actions/executions/{id}/reconcile` with audit record | Medium |
+| Activity | Unified audit/activity log beyond source/job events | audit route exists for target-specific history | Activity route still jobs/source-focused | Cursor-paginated unified activity stream with safe summaries | Medium |
 
 Next stage: add the remaining contracts in focused backend slices and then switch the corresponding production UI panels from unavailable/partial to Gateway-backed data.

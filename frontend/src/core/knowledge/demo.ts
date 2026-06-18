@@ -175,7 +175,13 @@ export class DemoKnowledgeTransport implements KnowledgeTransport {
       return { preview: "Demo fake action preview", safe: true };
     }
     if (request.method === "POST" && request.path.includes("/execute")) {
-      return { status: "SUCCEEDED", connector_type: "fake", demo: true };
+      return { execution_id: "demo-execution", status: "SUCCEEDED", connector_type: "fake", demo: true };
+    }
+    if (request.method === "GET" && request.path.startsWith("/actions/executions/")) {
+      return { execution_id: request.path.split("/").at(-1), status: "SUCCEEDED", connector_type: "fake", demo: true };
+    }
+    if (request.method === "GET" && request.path === "/audit") {
+      return listEnvelope([{ audit_log_id: "demo-audit", event_type: "action.executed", target_id: "demo", payload: {}, created_at: new Date(0).toISOString() }], request);
     }
     return { data: [], pagination: { limit: 20, offset: 0 } };
   }
