@@ -15,6 +15,15 @@ describe("DemoKnowledgeTransport", () => {
     await expect(
       transport.request({ method: "GET", path: "/jobs/demo-ingestion-job" }),
     ).resolves.toMatchObject({ status: "SUCCEEDED" });
+    await expect(
+      transport.request({ method: "GET", path: "/overview" }),
+    ).resolves.toMatchObject({ stats: expect.any(Object) });
+    await expect(
+      transport.request({ method: "GET", path: "/sources/src-climate-brief/detail" }),
+    ).resolves.toMatchObject({ source: expect.objectContaining({ id: "src-climate-brief" }) });
+    await expect(
+      transport.request({ method: "GET", path: "/workflows" }),
+    ).resolves.toMatchObject({ data: expect.any(Array) });
   });
 
   test("creates an ordered event stream that respects the cursor", async () => {

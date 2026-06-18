@@ -39,4 +39,160 @@ describe("Knowledge client", () => {
       } as never),
     ).rejects.toThrow("trusted field");
   });
+
+  test("creates synchronous analysis requests through the gateway contract", async () => {
+    const transport = transportReturning({
+      query: "What changed?",
+      answer: "Supported by cited evidence.",
+      model_identity: "deterministic-analysis",
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.createAnalysis({ query: "What changed?", context_budget: 5000 })).resolves.toMatchObject({
+      model_identity: "deterministic-analysis",
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/analyses",
+        body: {
+          query: "What changed?",
+          filters: {},
+          context_budget: 5000,
+          idempotency_key: null,
+        },
+      }),
+    );
+  });
+
+  test("rejects trusted identity fields from analysis payloads", async () => {
+    const client = createKnowledgeClient(transportReturning({}));
+
+    await expect(
+      client.createAnalysis({
+        query: "hello",
+        workspace_id: "workspace-1",
+      } as never),
+    ).rejects.toThrow("trusted field");
+  });
+
+  test("requests production overview through the gateway contract", async () => {
+    const transport = transportReturning({
+      stats: {},
+      recent_sources: [],
+      running_jobs: [],
+      recent_artifacts: [],
+      pending_approvals: [],
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.getOverview()).resolves.toMatchObject({ stats: {} });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "GET", path: "/overview" }),
+    );
+  });
+
+  test("requests source detail through the gateway contract", async () => {
+    const transport = transportReturning({
+      source: { source_id: "source-1" },
+      revisions: [],
+      chunks: [],
+      claims: [],
+      relations: [],
+      evidence: [],
+      jobs: [],
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.getSourceDetail("source-1")).resolves.toMatchObject({
+      source: { source_id: "source-1" },
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        path: "/sources/source-1/detail",
+      }),
+    );
+  });
+
+  test("lists workflows without creating a job", async () => {
+    const transport = transportReturning({
+      data: [],
+      pagination: { limit: 20, offset: 3 },
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(client.listWorkflows({ limit: 20, offset: 3 })).resolves.toMatchObject({
+      data: [],
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        path: "/workflows",
+        query: { limit: 20, offset: 3 },
+      }),
+    );
+  });
+
+  test("creates approvals and executes fake actions through formal contracts", async () => {
+    const transport = transportReturning({
+      approval_request_id: "approval-1",
+      status: "awaiting_approval",
+    });
+    const client = createKnowledgeClient(transport);
+
+    await expect(
+      client.createApproval({
+        workflow_run_id: "workflow-1",
+        action_type: "TASK_CREATE",
+        action_draft: { payload: { title: "Follow up" } },
+      }),
+    ).resolves.toMatchObject({ approval_request_id: "approval-1" });
+    expect(transport.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/approvals",
+        body: expect.objectContaining({ action_type: "TASK_CREATE" }),
+      }),
+    );
+
+    await client.previewAction("approval-1", {
+      action_draft: { payload: { title: "Follow up" } },
+    });
+    expect(transport.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/actions/approval-1/preview",
+      }),
+    );
+
+    await client.executeAction("approval-1", {
+      action_draft: { payload: { title: "Follow up" } },
+    });
+    expect(transport.request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: "/actions/approval-1/execute",
+        body: { action_draft: { payload: { title: "Follow up" } } },
+      }),
+    );
+  });
+
+  test("rejects trusted identity fields from approval and action payloads", async () => {
+    const client = createKnowledgeClient(transportReturning({}));
+
+    await expect(
+      client.createApproval({
+        workflow_run_id: "workflow-1",
+        action_type: "TASK_CREATE",
+        action_draft: { workspace_id: "workspace-1" },
+      }),
+    ).rejects.toThrow("trusted field");
+
+    await expect(
+      client.executeAction("approval-1", {
+        action_draft: { actor_id: "actor-1" },
+      }),
+    ).rejects.toThrow("trusted field");
+  });
 });

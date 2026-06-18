@@ -108,7 +108,7 @@ export function resolveKnowledgeFrontendConfig(
           "Knowledge SSE max retries",
         ),
     },
-    appEnvironment: overrides.appEnvironment ?? env.NODE_ENV,
+    appEnvironment: overrides.appEnvironment ?? process.env.NODE_ENV,
   };
 }
 

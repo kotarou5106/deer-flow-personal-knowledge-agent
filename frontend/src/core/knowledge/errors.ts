@@ -150,7 +150,7 @@ export function normalizeKnowledgeThrownError(error: unknown): KnowledgeApiError
   if (error instanceof Error) {
     return new KnowledgeApiError({
       kind: "network",
-      message: "Knowledge service is unreachable.",
+      message: error.message || "Knowledge service is unreachable.",
       cause: error,
     });
   }

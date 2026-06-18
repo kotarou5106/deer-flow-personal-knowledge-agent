@@ -89,7 +89,18 @@ export type SearchInput = {
 export type AnalysisCreateInput = {
   query: string;
   filters?: Record<string, unknown>;
+  context_budget?: number;
   idempotency_key?: string | null;
+};
+
+export type RevisionCompareInput = {
+  old_revision_id: string;
+  new_revision_id: string;
+};
+
+export type KnowledgeUpdateReportInput = {
+  old_revision_id?: string | null;
+  new_revision_id: string;
 };
 
 export type WorkflowCreateInput = {
@@ -103,7 +114,29 @@ export type ApprovalDecisionInput = {
   reason?: string | null;
 };
 
+export type ApprovalCreateInput = {
+  workflow_run_id: string;
+  action_type:
+    | "EMAIL_DRAFT"
+    | "EMAIL_SEND"
+    | "CALENDAR_DRAFT"
+    | "CALENDAR_CREATE"
+    | "TASK_CREATE"
+    | "ARTIFACT_EXPORT";
+  action_draft?: Record<string, unknown>;
+  target?: string | null;
+  risk_level?: "low" | "medium" | "high";
+  source_step_run_id?: string | null;
+  artifact_ids?: string[];
+  evidence_ids?: string[];
+  requires_approval?: boolean;
+};
+
 export type ActionPreviewInput = {
+  action_draft?: Record<string, unknown>;
+};
+
+export type ActionExecuteInput = {
   action_draft?: Record<string, unknown>;
 };
 
@@ -145,6 +178,9 @@ export type KnowledgeClient = {
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<UnknownListEnvelope>;
+  getOverview: (
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   listSources: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
@@ -158,8 +194,20 @@ export type KnowledgeClient = {
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<UnknownListEnvelope>;
+  getSourceDetail: (
+    sourceId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   getRevision: (
     revisionId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  compareRevisions: (
+    input: RevisionCompareInput,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  generateUpdateReport: (
+    input: KnowledgeUpdateReportInput,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
   listClaims: (
@@ -170,6 +218,10 @@ export type KnowledgeClient = {
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
+  getConflict: (
+    conflictId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   search: (
     input: SearchInput,
     options?: KnowledgeRequestOptions,
@@ -177,11 +229,15 @@ export type KnowledgeClient = {
   createAnalysis: (
     input: AnalysisCreateInput,
     options?: KnowledgeRequestOptions,
-  ) => Promise<KnowledgeJobAccepted>;
+  ) => Promise<Record<string, unknown>>;
   createWorkflow: (
     input: WorkflowCreateInput,
     options?: KnowledgeRequestOptions,
-  ) => Promise<KnowledgeJobAccepted | Record<string, unknown>>;
+  ) => Promise<Record<string, unknown>>;
+  listWorkflows: (
+    params?: ListParams,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<UnknownListEnvelope>;
   getWorkflow: (
     workflowRunId: string,
     options?: KnowledgeRequestOptions,
@@ -189,7 +245,23 @@ export type KnowledgeClient = {
   advanceWorkflow: (
     workflowRunId: string,
     options?: KnowledgeRequestOptions,
-  ) => Promise<KnowledgeJobAccepted>;
+  ) => Promise<Record<string, unknown>>;
+  pauseWorkflow: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  resumeWorkflow: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  retryWorkflow: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  generateWorkflowArtifact: (
+    workflowRunId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   listArtifacts: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
@@ -198,10 +270,18 @@ export type KnowledgeClient = {
     artifactId: string,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
+  listArtifactEvidenceLinks: (
+    artifactId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<UnknownListEnvelope>;
   listApprovals: (
     params?: ListParams,
     options?: KnowledgeRequestOptions,
   ) => Promise<UnknownListEnvelope>;
+  createApproval: (
+    input: ApprovalCreateInput,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
   getApproval: (
     approvalId: string,
     options?: KnowledgeRequestOptions,
@@ -218,8 +298,17 @@ export type KnowledgeClient = {
   ) => Promise<Record<string, unknown>>;
   executeAction: (
     approvalId: string,
+    input?: ActionExecuteInput,
     options?: KnowledgeRequestOptions,
   ) => Promise<Record<string, unknown>>;
+  getActionExecution: (
+    executionId: string,
+    options?: KnowledgeRequestOptions,
+  ) => Promise<Record<string, unknown>>;
+  listAudit: (
+    target: { target_type: string; target_id: string },
+    options?: KnowledgeRequestOptions,
+  ) => Promise<UnknownListEnvelope>;
 };
 
 export type KnowledgeRequestOptions = {
@@ -252,9 +341,6 @@ export type MissingKnowledgeCapability =
 
 export const missingBackendCapabilities: MissingKnowledgeCapability[] = [
   "graph_expansion",
-  "revision_comparison",
-  "knowledge_update_report",
-  "workflow_artifact_generation",
   "artifact_validation",
   "provenance_validation",
   "workflow_validation",

@@ -89,6 +89,7 @@ class ActionExecutionStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
 
 
 class ConflictStatus(StrEnum):

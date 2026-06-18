@@ -11,7 +11,7 @@ export type ConflictClassification =
   | "SOURCE_DISAGREEMENT"
   | "POSSIBLE_CONFLICT"
   | "INSUFFICIENT_EVIDENCE";
-export type WorkflowStatus = "PENDING" | "RUNNING" | "PAUSED" | "SUCCEEDED" | "FAILED";
+export type WorkflowStatus = "READY" | "PENDING" | "RUNNING" | "PAUSED" | "COMPLETED" | "REQUIRES_APPROVAL" | "SUCCEEDED" | "FAILED" | "CANCELLED";
 export type ApprovalStatus = "DRAFT" | "AWAITING_APPROVAL" | "APPROVED" | "REJECTED" | "CANCELLED";
 export type ActionExecutionStatus = "PENDING" | "EXECUTING" | "SUCCEEDED" | "FAILED" | "RECONCILIATION_REQUIRED";
 export type ArtifactStalenessStatus = "CURRENT" | "STALE" | "UNKNOWN";
@@ -220,6 +220,9 @@ export type KnowledgeApproval = {
   actionType: string;
   payloadSummary: string;
   payloadHash: string;
+  currentPayloadHash?: string;
+  isPayloadStale?: boolean;
+  invalidationReason?: string;
   requestedBy: string;
   riskLevel: RiskLevel;
   status: ApprovalStatus;

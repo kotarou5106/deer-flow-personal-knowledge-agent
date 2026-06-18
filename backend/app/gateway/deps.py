@@ -425,9 +425,12 @@ def get_trusted_knowledge_context(request: Request) -> TrustedKnowledgeContext:
     user = getattr(request.state, "user", None)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    user_id = str(user.id)
+    from app.gateway.internal_auth import get_trusted_internal_owner_user_id
+
+    owner_user_id = get_trusted_internal_owner_user_id(request)
+    user_id = str(owner_user_id or user.id)
     workspace_id = uuid5(NAMESPACE_URL, f"deerflow:knowledge-workspace:{user_id}")
-    thread_id = str(getattr(user, "id", user_id))
+    thread_id = user_id if owner_user_id else str(getattr(user, "id", user_id))
     try:
         from deerflow.config.paths import get_paths
 

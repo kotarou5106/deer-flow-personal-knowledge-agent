@@ -8,12 +8,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.gateway.deps import get_knowledge_job_service, get_knowledge_provider, get_trusted_knowledge_context
 from deerflow.knowledge.jobs.models import KnowledgeJobType
 from deerflow.knowledge.jobs.service import event_to_dict, job_to_dict
-from deerflow.knowledge.runtime.provider import KnowledgeServiceUnavailableError
+from deerflow.knowledge.runtime.provider import ActionNotApprovedError, ActionPayloadStaleError, KnowledgeServiceUnavailableError
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -42,13 +42,65 @@ class SearchRequest(StrictModel):
 class AnalysisCreateRequest(StrictModel):
     query: str = Field(min_length=1)
     filters: dict[str, Any] = Field(default_factory=dict)
+    context_budget: int = Field(default=4000, ge=1, le=12000)
     idempotency_key: str | None = Field(default=None, max_length=256)
+
+
+class RevisionCompareRequest(StrictModel):
+    old_revision_id: UUID
+    new_revision_id: UUID
+
+
+class KnowledgeUpdateReportRequest(StrictModel):
+    old_revision_id: UUID | None = None
+    new_revision_id: UUID
 
 
 class WorkflowCreateRequest(StrictModel):
     workflow_type: str = Field(min_length=1, max_length=128)
     input: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=256)
+
+    @model_validator(mode="after")
+    def reject_nested_trusted_identity(self) -> WorkflowCreateRequest:
+        trusted_fields = {"workspace_id", "user_id", "thread_id", "actor_id", "_trusted_user_id", "_trusted_actor_id", "_trusted_thread_id", "_trusted_storage_root"}
+        if trusted_fields & set(self.input):
+            raise ValueError("workflow input cannot include trusted identity fields")
+        return self
+
+
+class WorkflowArtifactCreateRequest(StrictModel):
+    idempotency_key: str | None = Field(default=None, max_length=256)
+
+
+def _reject_trusted_identity(value: Any, *, path: str = "payload") -> None:
+    trusted_fields = {"workspace_id", "user_id", "thread_id", "actor_id", "_trusted_user_id", "_trusted_actor_id", "_trusted_thread_id", "_trusted_storage_root"}
+    if isinstance(value, dict):
+        forbidden = trusted_fields & set(value)
+        if forbidden:
+            raise ValueError(f"{path} cannot include trusted identity fields")
+        for key, item in value.items():
+            _reject_trusted_identity(item, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_trusted_identity(item, path=f"{path}[{index}]")
+
+
+class ApprovalCreateRequest(StrictModel):
+    workflow_run_id: UUID
+    action_type: Literal["EMAIL_DRAFT", "EMAIL_SEND", "CALENDAR_DRAFT", "CALENDAR_CREATE", "TASK_CREATE", "ARTIFACT_EXPORT"]
+    action_draft: dict[str, Any] = Field(default_factory=dict)
+    target: str | None = Field(default=None, max_length=512)
+    risk_level: Literal["low", "medium", "high"] = "low"
+    source_step_run_id: UUID | None = None
+    artifact_ids: list[UUID] = Field(default_factory=list)
+    evidence_ids: list[UUID] = Field(default_factory=list)
+    requires_approval: bool = True
+
+    @model_validator(mode="after")
+    def reject_trusted_identity(self) -> ApprovalCreateRequest:
+        _reject_trusted_identity(self.action_draft, path="action_draft")
+        return self
 
 
 class ApprovalDecisionRequest(StrictModel):
@@ -58,6 +110,21 @@ class ApprovalDecisionRequest(StrictModel):
 
 class ActionPreviewRequest(StrictModel):
     action_draft: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_trusted_identity(self) -> ActionPreviewRequest:
+        _reject_trusted_identity(self.action_draft, path="action_draft")
+        return self
+
+
+class ActionExecuteRequest(StrictModel):
+    action_draft: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def reject_trusted_identity(self) -> ActionExecuteRequest:
+        if self.action_draft is not None:
+            _reject_trusted_identity(self.action_draft, path="action_draft")
+        return self
 
 
 def _limit(limit: int) -> int:
@@ -72,6 +139,22 @@ def _translate_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KnowledgeServiceUnavailableError):
         return _error(503, "service_not_configured", str(exc))
     if isinstance(exc, ValueError):
+        lowered = str(exc).casefold()
+        if "illegal workflow status transition" in lowered:
+            return _error(409, "invalid_workflow_transition", "Workflow state transition is not allowed")
+        if "missing required workflow input" in lowered:
+            return _error(422, "validation_error", "Workflow input is missing required fields")
+        return _error(404, "not_found", "Knowledge resource was not found")
+    return _error(500, "job_failed", "Knowledge service failed")
+
+
+def _translate_compare_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KnowledgeServiceUnavailableError):
+        return _error(503, "service_not_configured", str(exc))
+    if isinstance(exc, ValueError):
+        lowered = str(exc).casefold()
+        if "different sources" in lowered or "distinct" in lowered or "across workspaces" in lowered:
+            return _error(409, "invalid_revision_pair", "Revision pair cannot be compared")
         return _error(404, "not_found", "Knowledge resource was not found")
     return _error(500, "job_failed", "Knowledge service failed")
 
@@ -126,6 +209,14 @@ async def cancel_ingestion(job_id: UUID, request: Request, response: Response) -
     return await cancel_job(job_id, request, response)
 
 
+@router.get("/overview")
+async def overview(request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).overview(get_trusted_knowledge_context(request), {})  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.get("/sources")
 async def list_sources(request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     context = get_trusted_knowledge_context(request)
@@ -144,6 +235,14 @@ async def get_source(source_id: str, request: Request) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
+@router.get("/sources/{source_id}/detail")
+async def get_source_detail(source_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).get_source_detail(get_trusted_knowledge_context(request), source_id)  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.get("/sources/{source_id}/revisions")
 async def list_source_revisions(source_id: str, request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     context = get_trusted_knowledge_context(request)
@@ -151,6 +250,44 @@ async def list_source_revisions(source_id: str, request: Request, limit: int = Q
         return await get_knowledge_provider(request).list_source_revisions(context, {"source_id": source_id, "limit": _limit(limit), "offset": offset})  # type: ignore[attr-defined]
     except Exception as exc:
         raise _translate_error(exc) from exc
+
+
+@router.get("/revisions/compare")
+async def compare_revisions_get(old_revision_id: UUID, new_revision_id: UUID, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).compare_revisions(
+            get_trusted_knowledge_context(request),
+            {"old_revision_id": str(old_revision_id), "new_revision_id": str(new_revision_id)},
+        )
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
+@router.post("/revisions/compare")
+async def compare_revisions_post(body: RevisionCompareRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).compare_revisions(get_trusted_knowledge_context(request), body.model_dump(mode="json"))
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
+@router.get("/update-reports")
+async def get_update_report(new_revision_id: UUID, request: Request, old_revision_id: UUID | None = None) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).generate_update_report(
+            get_trusted_knowledge_context(request),
+            {"old_revision_id": str(old_revision_id) if old_revision_id else None, "new_revision_id": str(new_revision_id)},
+        )
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
+
+
+@router.post("/update-reports")
+async def create_update_report(body: KnowledgeUpdateReportRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).generate_update_report(get_trusted_knowledge_context(request), body.model_dump(mode="json"))
+    except Exception as exc:
+        raise _translate_compare_error(exc) from exc
 
 
 @router.get("/revisions/{revision_id}")
@@ -177,6 +314,14 @@ async def get_conflicts(request: Request, limit: int = Query(default=50, ge=1, l
         raise _translate_error(exc) from exc
 
 
+@router.get("/conflicts/{conflict_group_id}")
+async def get_conflict(conflict_group_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).get_conflict(get_trusted_knowledge_context(request), conflict_group_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.post("/search")
 async def search(body: SearchRequest, request: Request) -> dict[str, Any]:
     try:
@@ -187,15 +332,20 @@ async def search(body: SearchRequest, request: Request) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
-@router.post("/analyses", status_code=status.HTTP_202_ACCEPTED)
-async def create_analysis(body: AnalysisCreateRequest, request: Request, response: Response) -> dict[str, Any]:
-    context = get_trusted_knowledge_context(request)
-    service = get_knowledge_job_service(request)
-    payload = _job_payload(context, body.model_dump(exclude={"idempotency_key"}))
-    job = await service.enqueue(workspace_id=context.workspace_id, job_type=KnowledgeJobType.ANALYZE, payload=payload, idempotency_key=body.idempotency_key)
-    data, code = _accepted(request, job)
-    response.status_code = code
-    return data
+@router.post("/analyses")
+async def create_analysis(body: AnalysisCreateRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await asyncio.wait_for(
+            get_knowledge_provider(request).analyze(
+                get_trusted_knowledge_context(request),
+                body.model_dump(exclude={"idempotency_key"}),
+            ),
+            timeout=30,
+        )
+    except TimeoutError as exc:
+        raise _error(503, "service_not_configured", "Knowledge analysis timed out") from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.get("/analyses/{job_id}")
@@ -203,23 +353,21 @@ async def get_analysis(job_id: UUID, request: Request) -> dict[str, Any]:
     return await knowledge_job_status(job_id, request)
 
 
-@router.post("/workflows", status_code=status.HTTP_202_ACCEPTED)
-async def create_workflow(body: WorkflowCreateRequest, request: Request, response: Response) -> dict[str, Any]:
-    context = get_trusted_knowledge_context(request)
+@router.get("/workflows")
+async def list_workflows(request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     try:
-        result = await get_knowledge_provider(request).workflow_create(context, body.model_dump())
-        return result
-    except KnowledgeServiceUnavailableError:
-        payload = _job_payload(context, body.model_dump(exclude={"idempotency_key"}))
-        job = await get_knowledge_job_service(request).enqueue(
-            workspace_id=context.workspace_id,
-            job_type=KnowledgeJobType.WORKFLOW_ADVANCE,
-            payload=payload,
-            idempotency_key=body.idempotency_key,
-        )
-        data, code = _accepted(request, job)
-        response.status_code = code
-        return data
+        return await get_knowledge_provider(request).list_workflows(get_trusted_knowledge_context(request), {"limit": _limit(limit), "offset": offset})  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/workflows")
+async def create_workflow(body: WorkflowCreateRequest, request: Request) -> dict[str, Any]:
+    context = get_trusted_knowledge_context(request)
+    payload = body.model_dump()
+    payload["input"] = {**payload["input"], "user_id": context.user_id, "thread_id": context.thread_id}
+    try:
+        return await get_knowledge_provider(request).workflow_create(context, payload)
     except Exception as exc:
         raise _translate_error(exc) from exc
 
@@ -232,24 +380,48 @@ async def get_workflow(workflow_run_id: str, request: Request) -> dict[str, Any]
         raise _translate_error(exc) from exc
 
 
-@router.post("/workflows/{workflow_run_id}/advance", status_code=status.HTTP_202_ACCEPTED)
-async def advance_workflow(workflow_run_id: str, request: Request, response: Response) -> dict[str, Any]:
+@router.post("/workflows/{workflow_run_id}/advance")
+async def advance_workflow(workflow_run_id: str, request: Request) -> dict[str, Any]:
     context = get_trusted_knowledge_context(request)
-    payload = _job_payload(context, {"workflow_run_id": workflow_run_id})
-    job = await get_knowledge_job_service(request).enqueue(workspace_id=context.workspace_id, job_type=KnowledgeJobType.WORKFLOW_ADVANCE, payload=payload)
-    data, code = _accepted(request, job)
-    response.status_code = code
-    return data
+    try:
+        return await get_knowledge_provider(request).workflow_advance(context, workflow_run_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
-@router.post("/workflows/{workflow_run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
-async def resume_workflow(workflow_run_id: str, request: Request, response: Response) -> dict[str, Any]:
-    return await advance_workflow(workflow_run_id, request, response)
+@router.post("/workflows/{workflow_run_id}/pause")
+async def pause_workflow(workflow_run_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).workflow_pause(get_trusted_knowledge_context(request), workflow_run_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
-@router.post("/workflows/{workflow_run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
-async def retry_workflow(workflow_run_id: UUID, request: Request, response: Response) -> dict[str, Any]:
-    return await retry_job(workflow_run_id, request, response)
+@router.post("/workflows/{workflow_run_id}/resume")
+async def resume_workflow(workflow_run_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).workflow_resume(get_trusted_knowledge_context(request), workflow_run_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/workflows/{workflow_run_id}/retry")
+async def retry_workflow(workflow_run_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).workflow_retry(get_trusted_knowledge_context(request), workflow_run_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/workflows/{workflow_run_id}/artifacts")
+async def generate_workflow_artifact(workflow_run_id: str, body: WorkflowArtifactCreateRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).workflow_generate_artifact(
+            get_trusted_knowledge_context(request),
+            {"workflow_run_id": workflow_run_id, "idempotency_key": body.idempotency_key},
+        )
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.get("/artifacts")
@@ -268,10 +440,26 @@ async def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
+@router.get("/artifacts/{artifact_id}/evidence-links")
+async def get_artifact_evidence_links(artifact_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).list_artifact_evidence_links(get_trusted_knowledge_context(request), artifact_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.get("/approvals")
 async def list_approvals(request: Request, limit: int = Query(default=50, ge=1, le=MAX_PAGE_LIMIT), offset: int = Query(default=0, ge=0)) -> dict[str, Any]:
     try:
         return await get_knowledge_provider(request).list_approvals(get_trusted_knowledge_context(request), {"limit": _limit(limit), "offset": offset})  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/approvals")
+async def create_approval(body: ApprovalCreateRequest, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).approval_request(get_trusted_knowledge_context(request), body.model_dump(mode="json"))  # type: ignore[attr-defined]
     except Exception as exc:
         raise _translate_error(exc) from exc
 
@@ -304,11 +492,33 @@ async def preview_action(approval_id: str, body: ActionPreviewRequest, request: 
 
 
 @router.post("/actions/{approval_id}/execute")
-async def execute_action(approval_id: str, request: Request) -> dict[str, Any]:
+async def execute_action(approval_id: str, request: Request, body: ActionExecuteRequest | None = None) -> dict[str, Any]:
     try:
-        return await get_knowledge_provider(request).action_execute(get_trusted_knowledge_context(request), approval_id)
-    except ValueError as exc:
+        return await get_knowledge_provider(request).action_execute(
+            get_trusted_knowledge_context(request),
+            approval_id,
+            body.model_dump() if body is not None else None,
+        )
+    except ActionNotApprovedError as exc:
         raise _error(409, "action_not_approved", "Action is not approved") from exc
+    except ActionPayloadStaleError as exc:
+        raise _error(409, "action_payload_stale", "Action payload changed after approval") from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/actions/executions/{execution_id}")
+async def get_action_execution(execution_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).action_execution_get(get_trusted_knowledge_context(request), execution_id)  # type: ignore[attr-defined]
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/audit")
+async def get_audit_history(target_type: str, target_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return await get_knowledge_provider(request).audit_history(get_trusted_knowledge_context(request), {"target_type": target_type, "target_id": target_id})  # type: ignore[attr-defined]
     except Exception as exc:
         raise _translate_error(exc) from exc
 

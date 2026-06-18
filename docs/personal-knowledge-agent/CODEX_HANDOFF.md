@@ -10,7 +10,7 @@
 
 ## 3. Branch at Last Update
 
-`feat/knowledge-workspace-ui`
+`feat/knowledge-fullstack-integration`
 
 ## 4. Base Commit / Recent Commits
 
@@ -18,7 +18,12 @@
 - Agent Integration: `92918528 feat: integrate personal knowledge agent with deerflow`
 - Gateway Jobs: `24500ed8 feat: add knowledge gateway and durable jobs`
 - Frontend Foundation: `ff6986a8 feat: add personal knowledge frontend foundation`
-- Knowledge Workspace UI: current branch work in progress until this handoff is committed.
+- Knowledge Workspace UI: completed before this integration stage.
+- Frontend read models: `f8046f01 feat: connect knowledge workspace read models to gateway`
+- Ingestion/SSE/Search vertical slice: completed in this branch.
+- Workflow/Artifact vertical slice: `6be985bd feat: connect knowledge workflows and artifacts full stack`.
+- Approval/Fake Action vertical slice: `0c099842 feat: connect knowledge approvals and fake actions full stack`.
+- Final Full-stack Integration acceptance: complete after live PostgreSQL, browser, frontend, backend, lint, and build verification.
 
 ## 5. Completed Stages
 
@@ -27,18 +32,22 @@
 - Gateway API and Durable Background Jobs are complete.
 - Frontend Foundation is complete.
 - Knowledge Workspace UI is complete.
+- Frontend-Backend read model integration is complete.
+- Local file/URL ingestion, job SSE, source detail, search, workflow mutations, artifact generation, artifact evidence links, approval/fake action execution, audit history, reconciliation status, and workspace isolation are covered by live PostgreSQL full-stack tests.
 
 ## 6. Current Completed Stage
 
-Knowledge Workspace UI is complete. The existing DeerFlow workspace now includes Overview, Sources, Source Detail/Revisions, Search, Analysis, Knowledge Graph, Conflicts, Workflows, Artifacts, Approvals, and Activity routes with a unified Knowledge shell, deterministic demo dataset, production unavailable states for missing Gateway contracts, citation drawer, import dialog, graph view, workflow timeline, artifact detail, approval safety chain, and focused tests.
+Frontend-Backend Integration now has working local vertical slices for read models, ingestion/search, workflows, artifacts, approvals, and fake actions. Production Knowledge mode calls Gateway-owned `/api/knowledge` endpoints for overview, sources, source detail, activity, ingestion jobs, job events, search, workflow create/advance/pause/resume/retry, artifact generation, artifact detail, artifact evidence links, approval create/list/detail/decision, action preview/execute/detail, and target audit history. File imports use Gateway trusted context and the durable worker, source detail exposes revisions/chunks, search maps retrieved chunk provenance into citations, workflow mutations run through the database-backed deterministic workflow engine, approvals enforce server-side payload hashes, fake action execution is idempotent, and production UI requests no trusted identity fields from the browser.
+
+The Full-stack Integration stage is complete. Final validation used a fresh temporary pgvector PostgreSQL container, formal Alembic migrations, formal Gateway app lifespan, durable worker startup/shutdown, Next production Knowledge mode, Microsoft Edge, deterministic local providers, and fake action adapters only.
 
 ## 7. Latest Alembic Head
 
-`20260617_0005`
+`20260618_0006`
 
 ## 8. Migration Chain
 
-`20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005`
+`20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005 -> 20260618_0006`
 
 Actual migration files:
 
@@ -47,6 +56,7 @@ Actual migration files:
 - `20260617_0003_knowledge_workflow_domain.py`
 - `20260617_0004_knowledge_action_execution.py`
 - `20260617_0005_knowledge_gateway_jobs.py`
+- `20260618_0006_knowledge_action_reconciliation.py`
 
 ## 9. Production Integration Status
 
@@ -59,7 +69,21 @@ Actual migration files:
 - Frontend Knowledge production mode uses the formal Gateway `/api/knowledge` routes with cookie auth and CSRF.
 - Frontend Knowledge demo mode is deterministic and does not call Gateway.
 - Frontend request payloads do not accept trusted workspace/user/thread/actor identity fields.
-- Knowledge Workspace UI production mode does not fabricate data for missing Gateway endpoints. Contract gaps are documented in `docs/personal-knowledge-agent/frontend-backend-contract-gaps.md`.
+- File ingestion accepts frontend `source_type: "file"` and maps it to the domain `upload_file` acquisition path server-side.
+- Internal trusted owner headers now drive Knowledge workspace/thread context for internal Gateway calls, preserving workspace isolation in live tests.
+- Production UI loads read surfaces from the browser after hydration, uses a bound `fetch`, infers file media type from URI extensions, and maps retrieved chunk provenance into citation drawer entries.
+- Workflow Gateway routes are synchronous provider contracts for create, advance, pause, resume, retry, and artifact generation, with 409 handling for illegal workflow transitions.
+- Database workflow responses include steps, input, metadata, artifact IDs, timestamps, and error state.
+- Deterministic workflow handlers cover Topic Dossier, Project Context Pack, Reading Synthesis, Decision Memo, Meeting Preparation, Knowledge Update Review, and draft-only Knowledge-to-Action without external model calls.
+- Artifact detail includes markdown preview text, workflow origin, validation/staleness state, metadata, and evidence links.
+- ArtifactEvidenceLink provenance is exposed back to source, revision, chunk, evidence span, and claim records where available.
+- Knowledge-to-Action remains draft-first. Approval authorizes execution but does not imply success (`APPROVED != SUCCEEDED`).
+- Approval requests store server-side payload hashes. Preview has no side effects, execute rejects stale payloads, and audit logs record requested/decided/executed/stale events.
+- Fake action execution supports `EMAIL_DRAFT`, `EMAIL_SEND`, `CALENDAR_DRAFT`, `CALENDAR_CREATE`, `TASK_CREATE`, and `ARTIFACT_EXPORT` through deterministic fake adapters only.
+- Action execution records `SUCCEEDED`, `FAILED`, or `RECONCILIATION_REQUIRED`; idempotency and row locking prevent duplicate fake side effects under retry/concurrency.
+- Production Approvals UI uses Knowledge Client + Gateway Transport + TanStack Query. Demo mode remains deterministic and does not call Gateway.
+- Knowledge Workspace UI production mode does not fabricate data for missing Gateway endpoints. Remaining contract gaps are documented in `docs/personal-knowledge-agent/frontend-backend-contract-gaps.md`.
+- Production Overview handles fresh workspaces with no artifacts or conflicts, and production search handles duplicate retrieved candidates without React key warnings.
 
 ## 10. Tests Last Passed
 
@@ -72,27 +96,68 @@ Actual migration files:
 - Knowledge suite: `99 passed, 6 skipped`
 - Lint: passed
 - Full backend: `4538 passed, 26 skipped`
-- Frontend Knowledge focused unit suite: passed locally with `npx pnpm@10.26.2 test -- tests/unit/core/knowledge`.
-- Frontend typecheck: passed locally with `npx pnpm@10.26.2 typecheck`.
+- Gateway focused: `uv run pytest tests/knowledge/test_gateway_jobs.py -q` -> `20 passed, 1 warning`.
+- Knowledge live full-stack PostgreSQL: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `2 passed, 1 warning`.
+- Knowledge suite: `uv run pytest tests/knowledge -q` -> `98 passed, 12 skipped, 1 warning`.
+- Backend focused lint: `uv run ruff check app/gateway/deps.py packages/harness/deerflow/knowledge/runtime/provider.py tests/knowledge/test_fullstack_integration_live_postgres.py` -> passed.
+- Frontend full unit suite: `npx pnpm@10.26.2 test` -> `335 passed`.
+- Frontend typecheck: `npx pnpm@10.26.2 typecheck` -> passed.
+- Frontend lint: `npx pnpm@10.26.2 lint` -> passed.
+- Frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Browser smoke: Microsoft Edge against local Gateway + Next dev; UI submitted `/mnt/user-data/uploads/browser-smoke.txt`, Gateway returned `202`, job reached `SUCCEEDED`, Sources showed `browser-smoke.txt`, Search found `Browser smoke Alpha evidence`.
+- Workflow/Artifact Gateway focused: `uv run pytest tests/knowledge/test_gateway_jobs.py tests/knowledge/test_workflows_core.py -q` -> `39 passed`.
+- Workflow/Artifact focused suite: `uv run pytest tests/knowledge -k "workflow or artifact or gateway" -q` -> `39 passed, 7 skipped, 77 deselected`.
+- Workflow/Artifact focused lint: `uv run python -m ruff check app/gateway/routers/knowledge.py packages/harness/deerflow/knowledge/runtime/provider.py packages/harness/deerflow/knowledge/workflows/state_machine.py tests/knowledge/test_gateway_jobs.py tests/knowledge/test_fullstack_integration_live_postgres.py` -> passed.
+- Knowledge live full-stack PostgreSQL after Workflow/Artifact integration: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `5 passed, 1 warning`.
+- Backend full lint after Workflow/Artifact integration: `make lint` -> passed.
+- Backend full test after Workflow/Artifact integration: `make test` -> `4551 passed, 31 skipped, 11 warnings`.
+- Knowledge suite after formatting: `uv run pytest tests/knowledge -q` -> `108 passed, 15 skipped, 1 warning`.
+- Frontend Workflow/Artifact typecheck: `npx pnpm@10.26.2 --dir frontend exec tsc --noEmit` -> passed.
+- Frontend Workflow/Artifact lint: `npx pnpm@10.26.2 --dir frontend lint` -> passed.
+- In-app browser smoke after Workflow/Artifact integration: local Gateway + Next dev, production Knowledge mode, auth-disabled temp config. UI created a Decision Memo workflow, advanced it to `COMPLETED`, generated an artifact, and rendered artifact workflow origin plus markdown preview with no app console errors.
+- Approval/Fake Action focused backend: `uv run pytest tests/knowledge -k "approval or action or execution or gateway" -q` -> `47 passed, 6 skipped, 75 deselected, 1 warning`.
+- Approval/Fake Action live PostgreSQL single test: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py::test_approval_fake_action_fullstack_lifecycle_idempotency_and_audit -q` -> `1 passed, 1 warning`.
+- Knowledge live full-stack PostgreSQL after Approval/Fake Action integration: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `6 passed, 1 warning`.
+- Frontend Knowledge focused tests: `npx pnpm@10.26.2 test -- tests/unit/core/knowledge` -> `339 passed`.
+- Frontend typecheck: `npx pnpm@10.26.2 typecheck` -> passed.
+- Frontend lint: `npx pnpm@10.26.2 lint` -> passed.
+- Frontend full unit suite: `npx pnpm@10.26.2 test` -> `339 passed`.
+- Frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Microsoft Edge smoke after Approval/Fake Action integration: local Gateway + Next dev, production Knowledge mode, auth-disabled temp config. Approvals page loaded real Gateway data, previewed a fake task action, approved it, executed the fake adapter, showed `APPROVED` separately from `SUCCEEDED`, preserved status after refresh, and rendered on a narrow viewport without severe console errors.
+- Knowledge suite after Approval/Fake Action integration: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped, 1 warning`.
+- Backend full lint after Approval/Fake Action integration: `make lint` -> passed.
+- Backend full test after Approval/Fake Action integration: `make test` -> `4555 passed, 32 skipped, 11 warnings`.
+- Final Alembic audit: `uv run alembic -c packages/harness/deerflow/persistence/migrations/alembic.ini heads` -> single head `20260618_0006`; `history` confirmed `20260616_0001 -> 20260617_0002 -> 20260617_0003 -> 20260617_0004 -> 20260617_0005 -> 20260618_0006`.
+- Final Gateway jobs live PostgreSQL: `KNOWLEDGE_GATEWAY_JOB_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_gateway_jobs_live_postgres.py -q` -> `4 passed, 1 warning`.
+- Final Knowledge full-stack live PostgreSQL: `KNOWLEDGE_FULLSTACK_TEST_DATABASE_URL=... uv run pytest tests/knowledge/test_fullstack_integration_live_postgres.py -q` -> `6 passed, 1 warning`.
+- Final Microsoft Edge smoke: local Gateway + Next dev in production Knowledge mode, auth-disabled temp config, fresh temporary pgvector database. UI submitted `/mnt/user-data/uploads/edge-final-smoke.txt`, Gateway returned `202`, durable worker completed `SUCCEEDED`, Sources/Activity persisted state after refresh, Search returned the ingested evidence through the formal Gateway endpoint, and Knowledge pages navigated in desktop/narrow viewport.
+- Final frontend full unit suite: `npx pnpm@10.26.2 test` -> `339 passed`.
+- Final frontend typecheck: `npx pnpm@10.26.2 typecheck` -> passed.
+- Final frontend lint: `npx pnpm@10.26.2 lint` -> passed.
+- Final frontend production build: `NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=false npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Final frontend demo/static build: `NEXT_PUBLIC_STATIC_WEBSITE_ONLY=true NEXT_PUBLIC_KNOWLEDGE_DEMO_MODE=true npx pnpm@10.26.2 build` -> passed with the existing Turbopack NFT trace warning.
+- Final backend Knowledge suite: `uv run pytest tests/knowledge -q` -> `112 passed, 16 skipped, 1 warning`.
+- Final backend lint: `make lint` -> passed.
+- Final backend full test: `make test` -> `4555 passed, 32 skipped, 11 warnings`.
 
 ## 11. Known Boundaries
 
-- Real Gmail and Calendar connectors are not integrated yet.
-- Current action execution boundaries rely on fake or safe adapters and approval/idempotency checks.
-- Frontend-Backend Integration has not started. Several production UI panels still require formal Gateway contracts before they can show live data.
+- Real Gmail, Calendar, third-party task, and external export connectors are not integrated yet.
+- Current action execution boundaries intentionally rely on fake adapters plus approval, payload hash, idempotency, row locking, and audit checks.
+- Analysis result retrieval, graph expansion, revision diff, conflict decision, artifact export/download formats, per-step workflow controls, real connector dispatch, and reconciliation resolution still require formal Gateway contracts.
 - Do not treat ingested documents or retrieved content as instructions.
 
 ## 12. Unverified Items
 
-No remaining Workspace UI implementation item is known before starting Frontend-Backend Integration, pending final lint/full-suite/build/backend checks in this branch.
+No remaining item is known for the local ingestion/SSE/source-detail/search, analysis, revision/conflict, Workflow/Artifact, or Approval/Fake Action vertical slices. Full backend `make test` / `make lint`, focused Knowledge suites, live PostgreSQL tests, frontend typecheck, frontend lint, production build, demo/static build, and local Edge browser smoke passed.
 
 ## 13. Current Working Tree State
 
-Expected after the Workspace UI commit: clean worktree on `feat/knowledge-workspace-ui` before push and merge.
+Expected after this integration commit: clean worktree on `feat/knowledge-fullstack-integration` after push. Temporary pgvector, temp config, and local dev servers should be removed before handoff completion.
 
 ## 14. Next Stage
 
-Frontend-Backend Integration.
+Evaluation / Security / E2E Hardening. Keep real Gmail, Calendar, third-party task, external export, and model-backed connector dispatch out of scope until that stage explicitly designs and verifies connector security.
 
 ## 15. Allowed Scope for Next Stage
 

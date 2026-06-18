@@ -6,13 +6,17 @@ import {
   knowledgeJobSchema,
   unknownListEnvelopeSchema,
   unknownRecordSchema,
+  type ActionExecuteInput,
   type ActionPreviewInput,
   type AnalysisCreateInput,
+  type ApprovalCreateInput,
   type ApprovalDecisionInput,
   type IngestionCreateInput,
+  type KnowledgeUpdateReportInput,
   type KnowledgeClient,
   type KnowledgeRequestOptions,
   type ListParams,
+  type RevisionCompareInput,
   type SearchInput,
   type WorkflowCreateInput,
 } from "./types";
@@ -122,6 +126,16 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async getOverview(options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: "/overview",
+          ...options,
+        }),
+      );
+    },
     async listSources(params, options) {
       return parseResponse(
         unknownListEnvelopeSchema,
@@ -129,6 +143,16 @@ export function createKnowledgeClient(
           method: "GET",
           path: "/sources",
           query: listQuery(params),
+          ...options,
+        }),
+      );
+    },
+    async getSourceDetail(sourceId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: `/sources/${encodeURIComponent(sourceId)}/detail`,
           ...options,
         }),
       );
@@ -164,6 +188,31 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async compareRevisions(input: RevisionCompareInput, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/revisions/compare",
+          body: input,
+          ...options,
+        }),
+      );
+    },
+    async generateUpdateReport(input: KnowledgeUpdateReportInput, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/update-reports",
+          body: {
+            old_revision_id: input.old_revision_id ?? null,
+            new_revision_id: input.new_revision_id,
+          },
+          ...options,
+        }),
+      );
+    },
     async listClaims(params, options) {
       return parseResponse(
         unknownRecordSchema,
@@ -186,6 +235,16 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async getConflict(conflictId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: `/conflicts/${encodeURIComponent(conflictId)}`,
+          ...options,
+        }),
+      );
+    },
     async search(input: SearchInput, options) {
       return parseResponse(
         unknownRecordSchema,
@@ -202,14 +261,16 @@ export function createKnowledgeClient(
       );
     },
     async createAnalysis(input: AnalysisCreateInput, options) {
+      assertNoTrustedFields(input as Record<string, unknown>);
       return parseResponse(
-        knowledgeJobAcceptedSchema,
+        unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: "/analyses",
           body: {
             query: input.query,
             filters: input.filters ?? {},
+            context_budget: input.context_budget ?? 4000,
             idempotency_key: input.idempotency_key ?? null,
           },
           ...options,
@@ -218,18 +279,30 @@ export function createKnowledgeClient(
     },
     async createWorkflow(input: WorkflowCreateInput, options) {
       assertNoTrustedFields(input.input ?? {});
-      const raw = await transport.request({
-        method: "POST",
-        path: "/workflows",
-        body: {
-          workflow_type: input.workflow_type,
-          input: input.input ?? {},
-          idempotency_key: input.idempotency_key ?? null,
-        },
-        ...options,
-      });
-      const accepted = knowledgeJobAcceptedSchema.safeParse(raw);
-      return accepted.success ? accepted.data : parseResponse(unknownRecordSchema, raw);
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/workflows",
+          body: {
+            workflow_type: input.workflow_type,
+            input: input.input ?? {},
+            idempotency_key: input.idempotency_key ?? null,
+          },
+          ...options,
+        }),
+      );
+    },
+    async listWorkflows(params, options) {
+      return parseResponse(
+        unknownListEnvelopeSchema,
+        await transport.request({
+          method: "GET",
+          path: "/workflows",
+          query: listQuery(params),
+          ...options,
+        }),
+      );
     },
     async getWorkflow(workflowRunId, options) {
       return parseResponse(
@@ -243,10 +316,51 @@ export function createKnowledgeClient(
     },
     async advanceWorkflow(workflowRunId, options) {
       return parseResponse(
-        knowledgeJobAcceptedSchema,
+        unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: `/workflows/${encodeURIComponent(workflowRunId)}/advance`,
+          ...options,
+        }),
+      );
+    },
+    async pauseWorkflow(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/pause`,
+          ...options,
+        }),
+      );
+    },
+    async resumeWorkflow(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/resume`,
+          ...options,
+        }),
+      );
+    },
+    async retryWorkflow(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/retry`,
+          ...options,
+        }),
+      );
+    },
+    async generateWorkflowArtifact(workflowRunId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: `/workflows/${encodeURIComponent(workflowRunId)}/artifacts`,
+          body: {},
           ...options,
         }),
       );
@@ -272,6 +386,16 @@ export function createKnowledgeClient(
         }),
       );
     },
+    async listArtifactEvidenceLinks(artifactId, options) {
+      return parseResponse(
+        unknownListEnvelopeSchema,
+        await transport.request({
+          method: "GET",
+          path: `/artifacts/${encodeURIComponent(artifactId)}/evidence-links`,
+          ...options,
+        }),
+      );
+    },
     async listApprovals(params, options) {
       return parseResponse(
         unknownListEnvelopeSchema,
@@ -279,6 +403,19 @@ export function createKnowledgeClient(
           method: "GET",
           path: "/approvals",
           query: listQuery(params),
+          ...options,
+        }),
+      );
+    },
+    async createApproval(input: ApprovalCreateInput, options) {
+      assertNoTrustedFields(input);
+      if (input.action_draft) assertNoTrustedFields(input.action_draft);
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "POST",
+          path: "/approvals",
+          body: input,
           ...options,
         }),
       );
@@ -305,6 +442,7 @@ export function createKnowledgeClient(
       );
     },
     async previewAction(approvalId, input: ActionPreviewInput, options) {
+      if (input.action_draft) assertNoTrustedFields(input.action_draft);
       return parseResponse(
         unknownRecordSchema,
         await transport.request({
@@ -315,12 +453,35 @@ export function createKnowledgeClient(
         }),
       );
     },
-    async executeAction(approvalId, options) {
+    async executeAction(approvalId, input?: ActionExecuteInput, options?: KnowledgeRequestOptions) {
+      if (input?.action_draft) assertNoTrustedFields(input.action_draft);
       return parseResponse(
         unknownRecordSchema,
         await transport.request({
           method: "POST",
           path: `/actions/${encodeURIComponent(approvalId)}/execute`,
+          body: input ? { action_draft: input.action_draft ?? null } : undefined,
+          ...options,
+        }),
+      );
+    },
+    async getActionExecution(executionId, options) {
+      return parseResponse(
+        unknownRecordSchema,
+        await transport.request({
+          method: "GET",
+          path: `/actions/executions/${encodeURIComponent(executionId)}`,
+          ...options,
+        }),
+      );
+    },
+    async listAudit(target, options) {
+      return parseResponse(
+        unknownListEnvelopeSchema,
+        await transport.request({
+          method: "GET",
+          path: "/audit",
+          query: target,
           ...options,
         }),
       );
